@@ -1,0 +1,8 @@
+{
+  "name": "mini-lean-prover",
+  "version": "1.0.0",
+  "description": "互動式一階邏輯證明助手(策略 + 可信核心),命令列與網頁版",
+  "bin": { "lean-mini": "bin/cli.js" },
+  "scripts": { "demo": "node bin/cli.js --demo", "test": "node test/test.js", "build": "node scripts/build-web.js" },
+  "license": "MIT"
+}

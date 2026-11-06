@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>互動式證明助手</title>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#f1f4f1;--ink:#1c2b27;--mut:#667570;--pan:#fff;--line:#cfd8d3;--acc:#0f6b5c;--bad:#a4432b;color-scheme:light;
+ box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#121917;--ink:#e4ece8;--mut:#8fa19b;--pan:#1b2523;--line:#2e3b37;--acc:#5fc9b3;--bad:#e58a71;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#121917;--ink:#e4ece8;--mut:#8fa19b;--pan:#1b2523;--line:#2e3b37;--acc:#5fc9b3;--bad:#e58a71;color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:18px/1.7 Newsreader,"Noto Serif TC",Georgia,serif}
+main{max-width:760px;margin:0 auto;padding:28px 18px 64px}
+h1{font-size:2rem;line-height:1.2;margin:0 0 6px;font-weight:600}
+.sub{color:var(--mut);margin:0 0 22px}
+label{display:block;font-weight:600;margin:16px 0 6px}
+textarea,select{width:100%;font:15px/1.7 "JetBrains Mono",ui-monospace,Menlo,monospace;color:var(--ink);background:var(--pan);border:1px solid var(--line);border-radius:6px;padding:10px 12px}
+textarea{min-height:230px;resize:vertical;tab-size:2}
+select{font-family:inherit;font-size:16px}
+:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.st{font-weight:600;margin:16px 0 4px}.st.done{color:var(--acc)}.st.sorry,.st.error,.st.kernel{color:var(--bad)}.st.open{color:var(--mut)}
+.err{color:var(--bad);margin:0 0 8px;font-size:.95rem}
+.bar{display:flex;align-items:center;gap:8px;margin:14px 0 8px}
+.bar span{flex:1;color:var(--mut);font-size:.92rem}
+button{font:inherit;font-size:.92rem;color:var(--ink);background:transparent;border:1px solid var(--line);border-radius:6px;padding:4px 14px;cursor:pointer}
+pre{margin:0;font:15px/1.7 "JetBrains Mono",ui-monospace,monospace;white-space:pre-wrap;word-break:break-word}
+#goals{background:#1d2b28;color:#e4ece8;border-radius:8px;padding:14px 16px;min-height:7.5em}
+details{margin-top:18px}summary{cursor:pointer;font-weight:600}
+details pre{margin-top:8px;color:var(--mut);font-size:14px}
+</style>
+</head>
+<body>
+<main>
+<h1>互動式證明助手</h1>
+<p class="sub">用策略一步步縮小目標,每一步後的目標會顯示在下方;完成後由小型核心重新檢查整個證明。</p>
+<label for="ex">範例</label>
+<select id="ex"></select>
+<label for="src">證明腳本(點選任一行,查看該行之後的目標)</label>
+<textarea id="src" spellcheck="false" autocapitalize="off" autocorrect="off"></textarea>
+<p class="st" id="status"></p>
+<p class="err" id="err"></p>
+<div class="bar"><button id="prev" aria-label="上一行">◀</button><button id="next" aria-label="下一行">▶</button><span id="where"></span></div>
+<pre id="goals" aria-live="polite"></pre>
+<details><summary>核心驗證的證明項</summary><pre id="term"></pre></details>
+<details><summary>策略速查</summary><pre>intro h        目標是 → 或 ∀ 時引入假設或變數
+exact h a b    用假設 h 套用參數(項代入 ∀,假設餵給 →)直接完成
+apply h        目標吻合 h 的結論時,為 h 的前提開新目標
+assumption     目標剛好是某個假設
+constructor    目標 A ∧ B 拆成兩個目標(↔ 也是)
+left / right   目標 A ∨ B 時選一邊
+cases h with a b   拆開 ∧、∨、∃ 假設
+exists t       目標 ∃x, P(x) 時給出見證 t
+by_contra h    古典反證:假設 ¬目標,推出 False
+exfalso        目標改成 False
+have h := f a  由已知推出新假設;have h : A 先證明 A
+show A / sorry 確認目標 / 暫時跳過(會被標記)
+
+符號:~ ¬、&amp; ∧、| ∨、-&gt; →、&lt;-&gt; ↔、forall x. ∀、exists x. ∃
+標頭:theorem 名稱 (h : 前提) : 結論 := by</pre></details>
+</main>
+<script>/*LEAN*/</script>
+<script>
+const $=id=>document.getElementById(id),ta=$('src'),X=Lean.examples;
+X.forEach((e,i)=>$('ex').add(new Option(e.name,i)));
+let R=null;
+const lineAt=()=>ta.value.slice(0,ta.selectionStart).split('\n').length-1;
+function compute(){
+  const s=$('status');
+  try{R=Lean.runThm(ta.value)}catch(e){R=null;s.className='st error';s.textContent=e.message;$('err').textContent='';$('goals').textContent='';$('term').textContent='';return}
+  s.className='st '+R.status;s.textContent=Lean.statusText(R);
+  const e=Object.entries(R.errors)[0];$('err').textContent=e?`第 ${+e[0]+1} 行:${e[1]}`:'';
+  $('term').textContent=R.term||'(證明完成後會顯示)';
+  render();
+}
+function render(){
+  if(!R)return;
+  const li=Math.max(R.hi,Math.min(lineAt(),R.lines.length-1));
+  $('where').textContent=li===R.hi?'初始目標':`第 ${li+1} 行之後`;
+  $('goals').textContent=Lean.showGoals(R.states[li]);
+}
+function go(d){
+  const ls=ta.value.split('\n'),i=Math.max(0,Math.min(ls.length-1,lineAt()+d));
+  let pos=0;for(let k=0;k<i;k++)pos+=ls[k].length+1;
+  ta.setSelectionRange(pos+ls[i].length,pos+ls[i].length);render();
+}
+function load(i){ta.value=X[i].src;ta.setSelectionRange(ta.value.length,ta.value.length);compute()}
+$('ex').onchange=e=>load(e.target.value);
+ta.addEventListener('input',compute);
+['click','keyup'].forEach(t=>ta.addEventListener(t,render));
+$('prev').onclick=()=>go(-1);$('next').onclick=()=>go(1);
+load(0);
+</script>
+</body>
+</html>

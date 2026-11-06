@@ -1,0 +1,503 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lambda-Cube (CoC) 互動證明助手</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Noto+Serif+TC:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#f8faf9;--ink:#172621;--mut:#5c6e67;--pan:#fff;--line:#d3ded9;--acc:#0f6b5c;--bad:#a83220}
+@media(prefers-color-scheme:dark){
+:root{--bg:#101715;--ink:#e3ebe7;--mut:#859992;--pan:#192421;--line:#2a3a35;--acc:#4cc9ad;--bad:#f07d67}
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.6 "Noto Serif TC",Georgia,serif}
+main{max-width:820px;margin:0 auto;padding:28px 18px 60px}
+h1{font-size:1.8rem;margin:0 0 4px;font-weight:600}
+.sub{color:var(--mut);margin:0 0 20px;font-size:.95rem}
+label{display:block;font-weight:600;margin:14px 0 6px}
+select,textarea{width:100%;font:15px/1.6 "JetBrains Mono",monospace;background:var(--pan);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:10px}
+textarea{min-height:160px;resize:vertical}
+#state{background:#182622;color:#d7e8e1;padding:14px;border-radius:6px;font:14px/1.6 "JetBrains Mono",monospace;white-space:pre-wrap;min-height:90px;margin-top:10px}
+.st{font-weight:600;margin:16px 0 4px}
+.st.ok{color:var(--acc)}.st.err{color:var(--bad)}
+pre.term{background:var(--pan);border:1px solid var(--line);padding:10px;border-radius:6px;font:13px/1.6 "JetBrains Mono",monospace;white-space:pre-wrap;word-break:break-all}
+button{background:var(--acc);color:#fff;border:none;border-radius:6px;padding:8px 18px;font:inherit;font-weight:600;cursor:pointer;margin-top:10px}
+</style>
+</head>
+<body>
+<main>
+<h1>λ-Cube (CoC) 互動證明助手</h1>
+<p class="sub">基於純粹構造演算（Calculus of Constructions）的依值型別證明檢查器</p>
+<label for="ex">精選範例</label>
+<select id="ex">
+  <option value="0">同一律 (A -> A)</option>
+  <option value="1">假言三段論 (P->Q -> Q->R -> P->R)</option>
+  <option value="2">全稱量詞分配律 (依值型別 Pi-Type)</option>
+</select>
+<label for="code">證明腳本</label>
+<textarea id="code" spellcheck="false"></textarea>
+<button id="btn">驗證證明</button>
+<div class="st" id="status"></div>
+<label>目前目標 (Goals)</label>
+<div id="state"></div>
+<label>核心生成的 λ 證明項 (Proof Term)</label>
+<pre class="term" id="term"></pre>
+</main>
+<script>
+// --- 核心 AST 與計算 ---
+const Univ = level => ({ t: "Univ", level });
+const Var = name => ({ t: "Var", name });
+const Lam = (x, type, body) => ({ t: "Lam", x, type, body });
+const Pi = (x, type, body) => ({ t: "Pi", x, type, body });
+const App = (fn, arg) => ({ t: "App", fn, arg });
+const Hole = id => ({ t: "Hole", id });
+
+function fv(term, bound = new Set()) {
+  switch (term.t) {
+    case "Var": return bound.has(term.name) ? new Set() : new Set([term.name]);
+    case "Univ": case "Hole": return new Set();
+    case "App": {
+      const s = fv(term.fn, bound);
+      for (const v of fv(term.arg, bound)) s.add(v);
+      return s;
+    }
+    case "Lam": case "Pi": {
+      const s = fv(term.type, bound);
+      const b2 = new Set(bound); b2.add(term.x);
+      for (const v of fv(term.body, b2)) s.add(v);
+      return s;
+    }
+  }
+}
+
+function freshName(base, forbidden) {
+  let name = base || "x";
+  while (forbidden.has(name)) name += "'";
+  return name;
+}
+
+function subst(term, x, replacement) {
+  switch (term.t) {
+    case "Var": return term.name === x ? replacement : term;
+    case "Univ": case "Hole": return term;
+    case "App": return App(subst(term.fn, x, replacement), subst(term.arg, x, replacement));
+    case "Lam": case "Pi": {
+      const newType = subst(term.type, x, replacement);
+      if (term.x === x) return { ...term, type: newType };
+      const fvRepl = fv(replacement);
+      let v = term.x;
+      let body = term.body;
+      if (fvRepl.has(v)) {
+        const forbidden = new Set([...fvRepl, ...fv(body), x]);
+        const z = freshName(v, forbidden);
+        body = subst(body, v, Var(z));
+        v = z;
+      }
+      const newBody = subst(body, x, replacement);
+      return term.t === "Lam" ? Lam(v, newType, newBody) : Pi(v, newType, newBody);
+    }
+  }
+}
+
+function normalize(term, env = {}) {
+  switch (term.t) {
+    case "Var":
+      return env[term.name] ? normalize(env[term.name], env) : term;
+    case "Univ": case "Hole": return term;
+    case "App": {
+      const fn = normalize(term.fn, env);
+      const arg = normalize(term.arg, env);
+      if (fn.t === "Lam") return normalize(subst(fn.body, fn.x, arg), env);
+      return App(fn, arg);
+    }
+    case "Lam":
+      return Lam(term.x, normalize(term.type, env), normalize(term.body, env));
+    case "Pi":
+      return Pi(term.x, normalize(term.type, env), normalize(term.body, env));
+  }
+}
+
+function alphaEq(t1, t2) {
+  const n1 = normalize(t1);
+  const n2 = normalize(t2);
+  if (n1.t !== n2.t) return false;
+  switch (n1.t) {
+    case "Univ": return n1.level === n2.level;
+    case "Var": return n1.name === n2.name;
+    case "Hole": return n1.id === n2.id;
+    case "App": return alphaEq(n1.fn, n2.fn) && alphaEq(n1.arg, n2.arg);
+    case "Lam": case "Pi": {
+      if (!alphaEq(n1.type, n2.type)) return false;
+      if (n1.x === n2.x) return alphaEq(n1.body, n2.body);
+      const z = freshName("z", new Set([...fv(n1.body), ...fv(n2.body)]));
+      const b1 = subst(n1.body, n1.x, Var(z));
+      const b2 = subst(n2.body, n2.x, Var(z));
+      return alphaEq(b1, b2);
+    }
+  }
+}
+
+function pretty(term, prec = 0) {
+  const par = (s, c) => c ? "(" + s + ")" : s;
+  switch (term.t) {
+    case "Univ": return term.level === 0 ? "Prop" : "Type" + (term.level > 1 ? term.level : "");
+    case "Var": return term.name;
+    case "Hole": return "?" + term.id;
+    case "App": {
+      const chain = [];
+      let cur = term;
+      while (cur.t === "App") { chain.unshift(cur.arg); cur = cur.fn; }
+      const s = [pretty(cur, 2), ...chain.map(a => pretty(a, 3))].join(" ");
+      return par(s, prec > 2);
+    }
+    case "Lam":
+      return par("λ " + term.x + " : " + pretty(term.type, 0) + ", " + pretty(term.body, 0), prec > 0);
+    case "Pi": {
+      if (!fv(term.body).has(term.x)) {
+        return par(pretty(term.type, 2) + " -> " + pretty(term.body, 1), prec > 1);
+      }
+      return par("Π " + term.x + " : " + pretty(term.type, 0) + ", " + pretty(term.body, 0), prec > 0);
+    }
+  }
+}
+
+function infer(term, ctx = {}) {
+  switch (term.t) {
+    case "Univ":
+      return Univ(term.level + 1);
+    case "Var": {
+      if (!ctx[term.name]) throw new Error("未綁定的變數: " + term.name);
+      return ctx[term.name];
+    }
+    case "Hole":
+      throw new Error("證明中仍有未解決的目標洞: ?" + term.id);
+    case "Pi": {
+      const tyT = infer(term.type, ctx);
+      const normT = normalize(tyT);
+      if (normT.t !== "Univ") throw new Error("領域型別必須是宇宙(Type/Prop)");
+      const extended = { ...ctx, [term.x]: term.type };
+      const tyB = infer(term.body, extended);
+      const normB = normalize(tyB);
+      if (normB.t !== "Univ") throw new Error("目標型別必須是宇宙(Type/Prop)");
+      return normB.level === 0 ? Univ(0) : Univ(Math.max(normT.level, normB.level));
+    }
+    case "Lam": {
+      infer(term.type, ctx);
+      const extended = { ...ctx, [term.x]: term.type };
+      const bodyTy = infer(term.body, extended);
+      return Pi(term.x, term.type, bodyTy);
+    }
+    case "App": {
+      const fnTy = normalize(infer(term.fn, ctx));
+      if (fnTy.t !== "Pi") throw new Error("嘗試呼叫非函數物件: " + pretty(term.fn));
+      const argTy = infer(term.arg, ctx);
+      if (!alphaEq(fnTy.type, argTy)) {
+        throw new Error(
+          "參數型別不符! 預期: " + pretty(fnTy.type) + " 但得到: " + pretty(argTy) + " 在套用 " + pretty(term.fn) + " 於 " + pretty(term.arg) + " 時"
+        );
+      }
+      return normalize(subst(fnTy.body, fnTy.x, term.arg));
+    }
+  }
+}
+
+// --- 解析器 ---
+const GREEK = { "λ": "\\\\\\\\", "\\\\": "\\\\\\\\", "Π": "Pi ", "forall": "Pi ", "∀": "Pi ", "->": "->", "→": "->" };
+
+function lex(str) {
+  const s = str.replace(/[λ\\\\Π∀→]/g, c => GREEK[c] || c);
+  const regex = /->|:=|:|Prop|Type\\d*|Pi|\\\\|\\(|\\)|,|\\.|[A-Za-z_][\\w']*/g;
+  return s.match(regex) || [];
+}
+
+function parse(src) {
+  const tokens = lex(src);
+  let p = 0;
+  const peek = () => tokens[p];
+  const next = () => tokens[p++];
+  const expect = t => {
+    const got = next();
+    if (got !== t) throw new Error("語法錯誤: 預期 \\"" + t + "\\" 但得到 \\"" + (got || "EOF") + "\\"");
+  };
+
+  function parseExpr() { return parseArrow(); }
+
+  function parseArrow() {
+    let l = parsePi();
+    if (peek() === "->") {
+      next();
+      const r = parseArrow();
+      return Pi("_anon" + Math.random().toString(36).substr(2, 4), l, r);
+    }
+    return l;
+  }
+
+  function parsePi() {
+    if (peek() === "Pi") {
+      next();
+      const v = next();
+      expect(":");
+      const ty = parseExpr();
+      expect(",");
+      const body = parseExpr();
+      return Pi(v, ty, body);
+    }
+    if (peek() === "\\\\\\\\") {
+      next();
+      const v = next();
+      expect(":");
+      const ty = parseExpr();
+      expect(",");
+      const body = parseExpr();
+      return Lam(v, ty, body);
+    }
+    return parseApp();
+  }
+
+  function parseApp() {
+    let fn = parseAtom();
+    while (p < tokens.length && !["->", ")", ",", ":", ":="].includes(peek())) {
+      const arg = parseAtom();
+      fn = App(fn, arg);
+    }
+    return fn;
+  }
+
+  function parseAtom() {
+    const t = next();
+    if (!t) throw new Error("語法錯誤: 不預期的結尾");
+    if (t === "Prop") return Univ(0);
+    if (t === "Type") return Univ(1);
+    if (t.startsWith("Type")) return Univ(parseInt(t.slice(4)) || 1);
+    if (t === "(") {
+      const e = parseExpr();
+      expect(")");
+      return e;
+    }
+    if (/^[A-Za-z_][\\w']*$/.test(t)) return Var(t);
+    throw new Error("無法解析的標記: " + t);
+  }
+
+  const res = parseExpr();
+  if (p < tokens.length) throw new Error("有多餘符號: " + tokens.slice(p).join(" "));
+  return res;
+}
+
+// --- 證明狀態機 ---
+class ProofState {
+  constructor(goalType, initialCtx = {}) {
+    this.goalType = goalType;
+    this.ctx = { ...initialCtx };
+    this.goals = [{ id: 1, ctx: { ...initialCtx }, target: goalType }];
+    this.proofTree = Hole(1);
+    this.nextHoleId = 2;
+  }
+
+  instantiate(term, holeId, replacement) {
+    switch (term.t) {
+      case "Hole": return term.id === holeId ? replacement : term;
+      case "App": return App(this.instantiate(term.fn, holeId, replacement), this.instantiate(term.arg, holeId, replacement));
+      case "Lam": return Lam(term.x, term.type, this.instantiate(term.body, holeId, replacement));
+      case "Pi": return Pi(term.x, term.type, this.instantiate(term.body, holeId, replacement));
+      default: return term;
+    }
+  }
+
+  currentGoal() {
+    return this.goals[0] || null;
+  }
+
+  runTactic(line) {
+    const g = this.currentGoal();
+    if (!g) throw new Error("已經沒有未完成的目標!");
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("--")) return;
+
+    const parts = trimmed.split(/\\s+/);
+    const cmd = parts[0];
+    const arg = trimmed.slice(cmd.length).trim();
+
+    switch (cmd) {
+      case "intro": {
+        const name = arg || "h";
+        const normTarget = normalize(g.target);
+        if (normTarget.t !== "Pi") throw new Error("intro 失敗: 目標不是蘊含式(->)或全稱(Pi)");
+        const domType = normTarget.type;
+        const newTarget = subst(normTarget.body, normTarget.x, Var(name));
+        const newGoal = {
+          id: this.nextHoleId++,
+          ctx: { ...g.ctx, [name]: domType },
+          target: newTarget
+        };
+        const lam = Lam(name, domType, Hole(newGoal.id));
+        this.proofTree = this.instantiate(this.proofTree, g.id, lam);
+        this.goals.shift();
+        this.goals.unshift(newGoal);
+        break;
+      }
+
+      case "exact": {
+        const term = parse(arg);
+        const inferred = infer(term, g.ctx);
+        if (!alphaEq(inferred, g.target)) {
+          throw new Error("exact 失敗: 型別不符!\\n得到: " + pretty(inferred) + "\\n目標: " + pretty(g.target));
+        }
+        this.proofTree = this.instantiate(this.proofTree, g.id, term);
+        this.goals.shift();
+        break;
+      }
+
+      case "assumption": {
+        let found = false;
+        for (const [v, ty] of Object.entries(g.ctx)) {
+          if (alphaEq(ty, g.target)) {
+            this.proofTree = this.instantiate(this.proofTree, g.id, Var(v));
+            this.goals.shift();
+            found = true;
+            break;
+          }
+        }
+        if (!found) throw new Error("assumption 失敗: 沒有吻合的已知假設");
+        break;
+      }
+
+      case "apply": {
+        const fnTerm = parse(arg);
+        let fnTy = normalize(infer(fnTerm, g.ctx));
+        const newSubgoals = [];
+        let curApp = fnTerm;
+
+        while (true) {
+          if (alphaEq(fnTy, g.target)) break;
+          if (fnTy.t !== "Pi") {
+            throw new Error("apply 失敗: " + arg + " 的結論與目標不吻合\\n得到: " + pretty(fnTy) + "\\n目標: " + pretty(g.target));
+          }
+
+          const isDependent = fv(fnTy.body).has(fnTy.x);
+
+          if (isDependent) {
+            let matchedTerm = null;
+            for (const [v] of Object.entries(g.ctx)) {
+              const specialized = normalize(subst(fnTy.body, fnTy.x, Var(v)));
+              if (alphaEq(specialized, g.target)) {
+                matchedTerm = Var(v);
+                break;
+              }
+            }
+
+            if (matchedTerm) {
+              curApp = App(curApp, matchedTerm);
+              fnTy = normalize(subst(fnTy.body, fnTy.x, matchedTerm));
+              continue;
+            }
+          }
+
+          const subHoleId = this.nextHoleId++;
+          newSubgoals.push({
+            id: subHoleId,
+            ctx: { ...g.ctx },
+            target: fnTy.type
+          });
+          curApp = App(curApp, Hole(subHoleId));
+          fnTy = normalize(subst(fnTy.body, fnTy.x, Hole(subHoleId)));
+        }
+
+        this.proofTree = this.instantiate(this.proofTree, g.id, curApp);
+        this.goals.shift();
+        this.goals.unshift(...newSubgoals);
+        break;
+      }
+
+      default:
+        throw new Error("未知的策略: " + cmd);
+    }
+  }
+
+  isSolved() {
+    return this.goals.length === 0;
+  }
+
+  verify() {
+    if (!this.isSolved()) throw new Error("仍有目標未被證明!");
+    const inferred = infer(this.proofTree, this.ctx);
+    if (!alphaEq(inferred, this.goalType)) throw new Error("核心檢查失敗: 證明的不是原命題!");
+    return this.proofTree;
+  }
+}
+
+// --- 網頁 UI 互動邏輯 ---
+const EXAMPLES = [
+`theorem id : Pi A:Prop, A -> A := by
+  intro A
+  intro x
+  exact x
+qed`,
+`theorem syllogism : Pi P:Prop, Pi Q:Prop, Pi R:Prop, (P -> Q) -> (Q -> R) -> (P -> R) := by
+  intro P
+  intro Q
+  intro R
+  intro h1
+  intro h2
+  intro hp
+  apply h2
+  apply h1
+  exact hp
+qed`,
+`theorem all_inst : Pi Dom:Type, Pi P:(Dom -> Prop), Pi x:Dom, (Pi y:Dom, P y) -> P x := by
+  intro Dom
+  intro P
+  intro x
+  intro h
+  apply h
+qed`
+];
+
+const codeArea = document.getElementById("code");
+const stateDiv = document.getElementById("state");
+const statusDiv = document.getElementById("status");
+const termPre = document.getElementById("term");
+const exSel = document.getElementById("ex");
+
+function run() {
+  statusDiv.textContent = "";
+  termPre.textContent = "";
+  stateDiv.textContent = "";
+  try {
+    const text = codeArea.value;
+    const lines = text.split("\n");
+    const m = lines[0].match(/^(?:theorem|lemma)\s+([A-Za-z_][\w']*)\s*:\s*(.+?)\s*:=\s*by$/);
+    if (!m) throw new Error("標頭格式錯誤: theorem 名稱 : 命題 := by");
+    const goalAst = parse(m[2]);
+    const st = new ProofState(goalAst);
+
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (!line || line.startsWith("--") || line === "qed" || line === "end") continue;
+      st.runTactic(line);
+    }
+
+    if (st.goals.length > 0) {
+      statusDiv.className = "st err";
+      statusDiv.textContent = "… 尚有目標未完成";
+      stateDiv.textContent = st.goals.map((g, idx) => "目標 #" + (idx + 1) + ":\n" + Object.entries(g.ctx).map(([k, v]) => "  " + k + " : " + pretty(v) + "\n").join("") + "  ⊢ " + pretty(g.target)).join("\n\n");
+    } else {
+      const pf = st.verify();
+      statusDiv.className = "st ok";
+      statusDiv.textContent = "✔ 核心檢查通過 (Q.E.D.)!";
+      stateDiv.textContent = "所有目標皆已證畢。";
+      termPre.textContent = pretty(pf);
+    }
+  } catch (err) {
+    statusDiv.className = "st err";
+    statusDiv.textContent = "✘ " + err.message;
+  }
+}
+
+exSel.onchange = () => { codeArea.value = EXAMPLES[exSel.value]; run(); };
+document.getElementById("btn").onclick = run;
+codeArea.value = EXAMPLES[0];
+run();
+</script>
+</body>
+</html>

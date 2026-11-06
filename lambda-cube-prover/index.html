@@ -33,7 +33,7 @@ button{background:var(--acc);color:#fff;border:none;border-radius:6px;padding:8p
 <select id="ex">
   <option value="0">同一律 (A -> A)</option>
   <option value="1">假言三段論 (P->Q -> Q->R -> P->R)</option>
-  <option value="2">全稱量詞分配律 (依值型別 Pi-Type)</option>
+  <option value="2">全稱量詞實例化 (依值型別 Pi-Type)</option>
 </select>
 <label for="code">證明腳本</label>
 <textarea id="code" spellcheck="false"></textarea>
@@ -53,22 +53,23 @@ const Pi = (x, type, body) => ({ t: "Pi", x, type, body });
 const App = (fn, arg) => ({ t: "App", fn, arg });
 const Hole = id => ({ t: "Hole", id });
 
-function fv(term, bound = new Set()) {
-  switch (term.t) {
-    case "Var": return bound.has(term.name) ? new Set() : new Set([term.name]);
-    case "Univ": case "Hole": return new Set();
-    case "App": {
-      const s = fv(term.fn, bound);
-      for (const v of fv(term.arg, bound)) s.add(v);
-      return s;
-    }
-    case "Lam": case "Pi": {
-      const s = fv(term.type, bound);
-      const b2 = new Set(bound); b2.add(term.x);
-      for (const v of fv(term.body, b2)) s.add(v);
-      return s;
-    }
+function fv(term, bound) {
+  if (!bound) bound = new Set();
+  if (term.t === "Var") return bound.has(term.name) ? new Set() : new Set([term.name]);
+  if (term.t === "Univ" || term.t === "Hole") return new Set();
+  if (term.t === "App") {
+    const s = fv(term.fn, bound);
+    for (const v of fv(term.arg, bound)) s.add(v);
+    return s;
   }
+  if (term.t === "Lam" || term.t === "Pi") {
+    const s = fv(term.type, bound);
+    const b2 = new Set(bound);
+    b2.add(term.x);
+    for (const v of fv(term.body, b2)) s.add(v);
+    return s;
+  }
+  return new Set();
 }
 
 function freshName(base, forbidden) {
@@ -78,136 +79,126 @@ function freshName(base, forbidden) {
 }
 
 function subst(term, x, replacement) {
-  switch (term.t) {
-    case "Var": return term.name === x ? replacement : term;
-    case "Univ": case "Hole": return term;
-    case "App": return App(subst(term.fn, x, replacement), subst(term.arg, x, replacement));
-    case "Lam": case "Pi": {
-      const newType = subst(term.type, x, replacement);
-      if (term.x === x) return { ...term, type: newType };
-      const fvRepl = fv(replacement);
-      let v = term.x;
-      let body = term.body;
-      if (fvRepl.has(v)) {
-        const forbidden = new Set([...fvRepl, ...fv(body), x]);
-        const z = freshName(v, forbidden);
-        body = subst(body, v, Var(z));
-        v = z;
-      }
-      const newBody = subst(body, x, replacement);
-      return term.t === "Lam" ? Lam(v, newType, newBody) : Pi(v, newType, newBody);
+  if (term.t === "Var") return term.name === x ? replacement : term;
+  if (term.t === "Univ" || term.t === "Hole") return term;
+  if (term.t === "App") return App(subst(term.fn, x, replacement), subst(term.arg, x, replacement));
+  if (term.t === "Lam" || term.t === "Pi") {
+    const newType = subst(term.type, x, replacement);
+    if (term.x === x) return term.t === "Lam" ? Lam(term.x, newType, term.body) : Pi(term.x, newType, term.body);
+    const fvRepl = fv(replacement);
+    let v = term.x;
+    let body = term.body;
+    if (fvRepl.has(v)) {
+      const forbidden = new Set([...fvRepl, ...fv(body), x]);
+      const z = freshName(v, forbidden);
+      body = subst(body, v, Var(z));
+      v = z;
     }
+    const newBody = subst(body, x, replacement);
+    return term.t === "Lam" ? Lam(v, newType, newBody) : Pi(v, newType, newBody);
   }
+  return term;
 }
 
-function normalize(term, env = {}) {
-  switch (term.t) {
-    case "Var":
-      return env[term.name] ? normalize(env[term.name], env) : term;
-    case "Univ": case "Hole": return term;
-    case "App": {
-      const fn = normalize(term.fn, env);
-      const arg = normalize(term.arg, env);
-      if (fn.t === "Lam") return normalize(subst(fn.body, fn.x, arg), env);
-      return App(fn, arg);
-    }
-    case "Lam":
-      return Lam(term.x, normalize(term.type, env), normalize(term.body, env));
-    case "Pi":
-      return Pi(term.x, normalize(term.type, env), normalize(term.body, env));
+function normalize(term, env) {
+  if (!env) env = {};
+  if (term.t === "Var") return env[term.name] ? normalize(env[term.name], env) : term;
+  if (term.t === "Univ" || term.t === "Hole") return term;
+  if (term.t === "App") {
+    const fn = normalize(term.fn, env);
+    const arg = normalize(term.arg, env);
+    if (fn.t === "Lam") return normalize(subst(fn.body, fn.x, arg), env);
+    return App(fn, arg);
   }
+  if (term.t === "Lam") return Lam(term.x, normalize(term.type, env), normalize(term.body, env));
+  if (term.t === "Pi") return Pi(term.x, normalize(term.type, env), normalize(term.body, env));
+  return term;
 }
 
 function alphaEq(t1, t2) {
   const n1 = normalize(t1);
   const n2 = normalize(t2);
   if (n1.t !== n2.t) return false;
-  switch (n1.t) {
-    case "Univ": return n1.level === n2.level;
-    case "Var": return n1.name === n2.name;
-    case "Hole": return n1.id === n2.id;
-    case "App": return alphaEq(n1.fn, n2.fn) && alphaEq(n1.arg, n2.arg);
-    case "Lam": case "Pi": {
-      if (!alphaEq(n1.type, n2.type)) return false;
-      if (n1.x === n2.x) return alphaEq(n1.body, n2.body);
-      const z = freshName("z", new Set([...fv(n1.body), ...fv(n2.body)]));
-      const b1 = subst(n1.body, n1.x, Var(z));
-      const b2 = subst(n2.body, n2.x, Var(z));
-      return alphaEq(b1, b2);
-    }
+  if (n1.t === "Univ") return n1.level === n2.level;
+  if (n1.t === "Var") return n1.name === n2.name;
+  if (n1.t === "Hole") return n1.id === n2.id;
+  if (n1.t === "App") return alphaEq(n1.fn, n2.fn) && alphaEq(n1.arg, n2.arg);
+  if (n1.t === "Lam" || n1.t === "Pi") {
+    if (!alphaEq(n1.type, n2.type)) return false;
+    if (n1.x === n2.x) return alphaEq(n1.body, n2.body);
+    const z = freshName("z", new Set([...fv(n1.body), ...fv(n2.body)]));
+    const b1 = subst(n1.body, n1.x, Var(z));
+    const b2 = subst(n2.body, n2.x, Var(z));
+    return alphaEq(b1, b2);
   }
+  return false;
 }
 
-function pretty(term, prec = 0) {
+function pretty(term, prec) {
+  if (!prec) prec = 0;
   const par = (s, c) => c ? "(" + s + ")" : s;
-  switch (term.t) {
-    case "Univ": return term.level === 0 ? "Prop" : "Type" + (term.level > 1 ? term.level : "");
-    case "Var": return term.name;
-    case "Hole": return "?" + term.id;
-    case "App": {
-      const chain = [];
-      let cur = term;
-      while (cur.t === "App") { chain.unshift(cur.arg); cur = cur.fn; }
-      const s = [pretty(cur, 2), ...chain.map(a => pretty(a, 3))].join(" ");
-      return par(s, prec > 2);
-    }
-    case "Lam":
-      return par("λ " + term.x + " : " + pretty(term.type, 0) + ", " + pretty(term.body, 0), prec > 0);
-    case "Pi": {
-      if (!fv(term.body).has(term.x)) {
-        return par(pretty(term.type, 2) + " -> " + pretty(term.body, 1), prec > 1);
-      }
-      return par("Π " + term.x + " : " + pretty(term.type, 0) + ", " + pretty(term.body, 0), prec > 0);
-    }
+  if (term.t === "Univ") return term.level === 0 ? "Prop" : "Type" + (term.level > 1 ? term.level : "");
+  if (term.t === "Var") return term.name;
+  if (term.t === "Hole") return "?" + term.id;
+  if (term.t === "App") {
+    const chain = [];
+    let cur = term;
+    while (cur.t === "App") { chain.unshift(cur.arg); cur = cur.fn; }
+    const s = [pretty(cur, 2), ...chain.map(a => pretty(a, 3))].join(" ");
+    return par(s, prec > 2);
   }
+  if (term.t === "Lam") return par("λ " + term.x + " : " + pretty(term.type, 0) + ", " + pretty(term.body, 0), prec > 0);
+  if (term.t === "Pi") {
+    if (!fv(term.body).has(term.x)) return par(pretty(term.type, 2) + " -> " + pretty(term.body, 1), prec > 1);
+    return par("Π " + term.x + " : " + pretty(term.type, 0) + ", " + pretty(term.body, 0), prec > 0);
+  }
+  return "?";
 }
 
-function infer(term, ctx = {}) {
-  switch (term.t) {
-    case "Univ":
-      return Univ(term.level + 1);
-    case "Var": {
-      if (!ctx[term.name]) throw new Error("未綁定的變數: " + term.name);
-      return ctx[term.name];
-    }
-    case "Hole":
-      throw new Error("證明中仍有未解決的目標洞: ?" + term.id);
-    case "Pi": {
-      const tyT = infer(term.type, ctx);
-      const normT = normalize(tyT);
-      if (normT.t !== "Univ") throw new Error("領域型別必須是宇宙(Type/Prop)");
-      const extended = { ...ctx, [term.x]: term.type };
-      const tyB = infer(term.body, extended);
-      const normB = normalize(tyB);
-      if (normB.t !== "Univ") throw new Error("目標型別必須是宇宙(Type/Prop)");
-      return normB.level === 0 ? Univ(0) : Univ(Math.max(normT.level, normB.level));
-    }
-    case "Lam": {
-      infer(term.type, ctx);
-      const extended = { ...ctx, [term.x]: term.type };
-      const bodyTy = infer(term.body, extended);
-      return Pi(term.x, term.type, bodyTy);
-    }
-    case "App": {
-      const fnTy = normalize(infer(term.fn, ctx));
-      if (fnTy.t !== "Pi") throw new Error("嘗試呼叫非函數物件: " + pretty(term.fn));
-      const argTy = infer(term.arg, ctx);
-      if (!alphaEq(fnTy.type, argTy)) {
-        throw new Error(
-          "參數型別不符! 預期: " + pretty(fnTy.type) + " 但得到: " + pretty(argTy) + " 在套用 " + pretty(term.fn) + " 於 " + pretty(term.arg) + " 時"
-        );
-      }
-      return normalize(subst(fnTy.body, fnTy.x, term.arg));
-    }
+function infer(term, ctx) {
+  if (!ctx) ctx = {};
+  if (term.t === "Univ") return Univ(term.level + 1);
+  if (term.t === "Var") {
+    if (!ctx[term.name]) throw new Error("未綁定的變數: " + term.name);
+    return ctx[term.name];
   }
+  if (term.t === "Hole") throw new Error("仍有未解決的目標洞: ?" + term.id);
+  if (term.t === "Pi") {
+    const tyT = infer(term.type, ctx);
+    const normT = normalize(tyT);
+    if (normT.t !== "Univ") throw new Error("領域型別必須是宇宙 (Type/Prop)");
+    const extended = Object.assign({}, ctx);
+    extended[term.x] = term.type;
+    const tyB = infer(term.body, extended);
+    const normB = normalize(tyB);
+    if (normB.t !== "Univ") throw new Error("目標型別必須是宇宙 (Type/Prop)");
+    return normB.level === 0 ? Univ(0) : Univ(Math.max(normT.level, normB.level));
+  }
+  if (term.t === "Lam") {
+    infer(term.type, ctx);
+    const extended = Object.assign({}, ctx);
+    extended[term.x] = term.type;
+    const bodyTy = infer(term.body, extended);
+    return Pi(term.x, term.type, bodyTy);
+  }
+  if (term.t === "App") {
+    const fnTy = normalize(infer(term.fn, ctx));
+    if (fnTy.t !== "Pi") throw new Error("嘗試呼叫非函數物件: " + pretty(term.fn));
+    const argTy = infer(term.arg, ctx);
+    if (!alphaEq(fnTy.type, argTy)) {
+      throw new Error("參數型別不符! 預期: " + pretty(fnTy.type) + " 但得到: " + pretty(argTy));
+    }
+    return normalize(subst(fnTy.body, fnTy.x, term.arg));
+  }
+  throw new Error("無法推導型別的項");
 }
 
 // --- 解析器 ---
-const GREEK = { "λ": "\\\\\\\\", "\\\\": "\\\\\\\\", "Π": "Pi ", "forall": "Pi ", "∀": "Pi ", "->": "->", "→": "->" };
-
 function lex(str) {
-  const s = str.replace(/[λ\\\\Π∀→]/g, c => GREEK[c] || c);
-  const regex = /->|:=|:|Prop|Type\\d*|Pi|\\\\|\\(|\\)|,|\\.|[A-Za-z_][\\w']*/g;
+  const s = str.replace(/[∀Π]/g, "Pi ")
+               .replace(/[λ]/g, "Lam ")
+               .replace(/[→]/g, "->");
+  const regex = /->|:=|:|Prop|Type[0-9]*|Pi|Lam|\(|\)|,|\.|[A-Za-z_][\w']*/g;
   return s.match(regex) || [];
 }
 
@@ -218,7 +209,7 @@ function parse(src) {
   const next = () => tokens[p++];
   const expect = t => {
     const got = next();
-    if (got !== t) throw new Error("語法錯誤: 預期 \\"" + t + "\\" 但得到 \\"" + (got || "EOF") + "\\"");
+    if (got !== t) throw new Error("語法錯誤: 預期 '" + t + "' 但得到 '" + (got || "EOF") + "'");
   };
 
   function parseExpr() { return parseArrow(); }
@@ -243,7 +234,7 @@ function parse(src) {
       const body = parseExpr();
       return Pi(v, ty, body);
     }
-    if (peek() === "\\\\\\\\") {
+    if (peek() === "Lam") {
       next();
       const v = next();
       expect(":");
@@ -266,7 +257,7 @@ function parse(src) {
 
   function parseAtom() {
     const t = next();
-    if (!t) throw new Error("語法錯誤: 不預期的結尾");
+    if (!t) throw new Error("不預期的結尾");
     if (t === "Prop") return Univ(0);
     if (t === "Type") return Univ(1);
     if (t.startsWith("Type")) return Univ(parseInt(t.slice(4)) || 1);
@@ -275,8 +266,8 @@ function parse(src) {
       expect(")");
       return e;
     }
-    if (/^[A-Za-z_][\\w']*$/.test(t)) return Var(t);
-    throw new Error("無法解析的標記: " + t);
+    if (/^[A-Za-z_][\w']*$/.test(t)) return Var(t);
+    throw new Error("無法解析的符號: " + t);
   }
 
   const res = parseExpr();
@@ -284,24 +275,22 @@ function parse(src) {
   return res;
 }
 
-// --- 證明狀態機 ---
+// --- 證明器狀態機 ---
 class ProofState {
-  constructor(goalType, initialCtx = {}) {
+  constructor(goalType, initialCtx) {
     this.goalType = goalType;
-    this.ctx = { ...initialCtx };
-    this.goals = [{ id: 1, ctx: { ...initialCtx }, target: goalType }];
+    this.ctx = Object.assign({}, initialCtx || {});
+    this.goals = [{ id: 1, ctx: Object.assign({}, this.ctx), target: goalType }];
     this.proofTree = Hole(1);
     this.nextHoleId = 2;
   }
 
   instantiate(term, holeId, replacement) {
-    switch (term.t) {
-      case "Hole": return term.id === holeId ? replacement : term;
-      case "App": return App(this.instantiate(term.fn, holeId, replacement), this.instantiate(term.arg, holeId, replacement));
-      case "Lam": return Lam(term.x, term.type, this.instantiate(term.body, holeId, replacement));
-      case "Pi": return Pi(term.x, term.type, this.instantiate(term.body, holeId, replacement));
-      default: return term;
-    }
+    if (term.t === "Hole") return term.id === holeId ? replacement : term;
+    if (term.t === "App") return App(this.instantiate(term.fn, holeId, replacement), this.instantiate(term.arg, holeId, replacement));
+    if (term.t === "Lam") return Lam(term.x, term.type, this.instantiate(term.body, holeId, replacement));
+    if (term.t === "Pi") return Pi(term.x, term.type, this.instantiate(term.body, holeId, replacement));
+    return term;
   }
 
   currentGoal() {
@@ -314,104 +303,79 @@ class ProofState {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("--")) return;
 
-    const parts = trimmed.split(/\\s+/);
+    const parts = trimmed.split(/\s+/);
     const cmd = parts[0];
     const arg = trimmed.slice(cmd.length).trim();
 
-    switch (cmd) {
-      case "intro": {
-        const name = arg || "h";
-        const normTarget = normalize(g.target);
-        if (normTarget.t !== "Pi") throw new Error("intro 失敗: 目標不是蘊含式(->)或全稱(Pi)");
-        const domType = normTarget.type;
-        const newTarget = subst(normTarget.body, normTarget.x, Var(name));
-        const newGoal = {
-          id: this.nextHoleId++,
-          ctx: { ...g.ctx, [name]: domType },
-          target: newTarget
-        };
-        const lam = Lam(name, domType, Hole(newGoal.id));
-        this.proofTree = this.instantiate(this.proofTree, g.id, lam);
-        this.goals.shift();
-        this.goals.unshift(newGoal);
-        break;
-      }
-
-      case "exact": {
-        const term = parse(arg);
-        const inferred = infer(term, g.ctx);
-        if (!alphaEq(inferred, g.target)) {
-          throw new Error("exact 失敗: 型別不符!\\n得到: " + pretty(inferred) + "\\n目標: " + pretty(g.target));
-        }
-        this.proofTree = this.instantiate(this.proofTree, g.id, term);
-        this.goals.shift();
-        break;
-      }
-
-      case "assumption": {
-        let found = false;
-        for (const [v, ty] of Object.entries(g.ctx)) {
-          if (alphaEq(ty, g.target)) {
-            this.proofTree = this.instantiate(this.proofTree, g.id, Var(v));
-            this.goals.shift();
-            found = true;
-            break;
-          }
-        }
-        if (!found) throw new Error("assumption 失敗: 沒有吻合的已知假設");
-        break;
-      }
-
-      case "apply": {
-        const fnTerm = parse(arg);
-        let fnTy = normalize(infer(fnTerm, g.ctx));
-        const newSubgoals = [];
-        let curApp = fnTerm;
-
-        while (true) {
-          if (alphaEq(fnTy, g.target)) break;
-          if (fnTy.t !== "Pi") {
-            throw new Error("apply 失敗: " + arg + " 的結論與目標不吻合\\n得到: " + pretty(fnTy) + "\\n目標: " + pretty(g.target));
-          }
-
-          const isDependent = fv(fnTy.body).has(fnTy.x);
-
-          if (isDependent) {
-            let matchedTerm = null;
-            for (const [v] of Object.entries(g.ctx)) {
-              const specialized = normalize(subst(fnTy.body, fnTy.x, Var(v)));
-              if (alphaEq(specialized, g.target)) {
-                matchedTerm = Var(v);
-                break;
-              }
-            }
-
-            if (matchedTerm) {
-              curApp = App(curApp, matchedTerm);
-              fnTy = normalize(subst(fnTy.body, fnTy.x, matchedTerm));
-              continue;
-            }
-          }
-
-          const subHoleId = this.nextHoleId++;
-          newSubgoals.push({
-            id: subHoleId,
-            ctx: { ...g.ctx },
-            target: fnTy.type
-          });
-          curApp = App(curApp, Hole(subHoleId));
-          fnTy = normalize(subst(fnTy.body, fnTy.x, Hole(subHoleId)));
-        }
-
-        this.proofTree = this.instantiate(this.proofTree, g.id, curApp);
-        this.goals.shift();
-        this.goals.unshift(...newSubgoals);
-        break;
-      }
-
-      default:
-        throw new Error("未知的策略: " + cmd);
+    if (cmd === "intro") {
+      const name = arg || "h";
+      const normTarget = normalize(g.target);
+      if (normTarget.t !== "Pi") throw new Error("intro 失敗: 目標不是蘊含式(->)或全稱(Pi)");
+      const domType = normTarget.type;
+      const newTarget = subst(normTarget.body, normTarget.x, Var(name));
+      const newCtx = Object.assign({}, g.ctx);
+      newCtx[name] = domType;
+      const newGoal = { id: this.nextHoleId++, ctx: newCtx, target: newTarget };
+      const lam = Lam(name, domType, Hole(newGoal.id));
+      this.proofTree = this.instantiate(this.proofTree, g.id, lam);
+      this.goals.shift();
+      this.goals.unshift(newGoal);
+      return;
     }
+
+    if (cmd === "exact") {
+      const term = parse(arg);
+      const inferred = infer(term, g.ctx);
+      if (!alphaEq(inferred, g.target)) {
+        throw new Error("exact 失敗: 型別不符! 得到: " + pretty(inferred) + " 但目標是: " + pretty(g.target));
+      }
+      this.proofTree = this.instantiate(this.proofTree, g.id, term);
+      this.goals.shift();
+      return;
+    }
+
+    if (cmd === "apply") {
+      const fnTerm = parse(arg);
+      let fnTy = normalize(infer(fnTerm, g.ctx));
+      const newSubgoals = [];
+      let curApp = fnTerm;
+
+      while (true) {
+        if (alphaEq(fnTy, g.target)) break;
+        if (fnTy.t !== "Pi") {
+          throw new Error("apply 失敗: 結論不吻合。得到: " + pretty(fnTy) + " 但目標是: " + pretty(g.target));
+        }
+
+        const isDependent = fv(fnTy.body).has(fnTy.x);
+        if (isDependent) {
+          let matchedTerm = null;
+          for (const v of Object.keys(g.ctx)) {
+            const specialized = normalize(subst(fnTy.body, fnTy.x, Var(v)));
+            if (alphaEq(specialized, g.target)) {
+              matchedTerm = Var(v);
+              break;
+            }
+          }
+          if (matchedTerm) {
+            curApp = App(curApp, matchedTerm);
+            fnTy = normalize(subst(fnTy.body, fnTy.x, matchedTerm));
+            continue;
+          }
+        }
+
+        const subHoleId = this.nextHoleId++;
+        newSubgoals.push({ id: subHoleId, ctx: Object.assign({}, g.ctx), target: fnTy.type });
+        curApp = App(curApp, Hole(subHoleId));
+        fnTy = normalize(subst(fnTy.body, fnTy.x, Hole(subHoleId)));
+      }
+
+      this.proofTree = this.instantiate(this.proofTree, g.id, curApp);
+      this.goals.shift();
+      this.goals.unshift(...newSubgoals);
+      return;
+    }
+
+    throw new Error("未知的策略: " + cmd);
   }
 
   isSolved() {
@@ -426,7 +390,7 @@ class ProofState {
   }
 }
 
-// --- 網頁 UI 互動邏輯 ---
+// --- 介面綁定 ---
 const EXAMPLES = [
 `theorem id : Pi A:Prop, A -> A := by
   intro A

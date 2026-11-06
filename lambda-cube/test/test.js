@@ -1,0 +1,12 @@
+const C = require('../src/cube.js'); let fail = 0;
+const ok = (c, m) => { console.log((c ? 'PASS  ' : 'FAIL  ') + m); if (!c) fail++; };
+for (const e of C.examples) ok(C.runScript(e.src).ok === !e.name.includes('錯誤'), e.name);
+const t = s => C.runScript(s);
+ok(!t('system λP\ndef id : forall (A : Prop), A -> A := fun (A : Prop) (x : A) => x').ok, 'λP 沒有多型,拒絕 ∀(A:Prop)');
+ok(!t('system λ2\ndef And (A B : Prop) : Prop := forall (C : Prop), (A -> B -> C) -> C').ok, 'λ2 沒有型別運算子,拒絕 Prop→Prop→Prop');
+ok(!t('system λ2\ndef id : forall (A : Prop), A -> A := fun (A : Prop) (x : A) => x\ncheck id id').ok, '型別不吻合的應用被拒絕');
+ok(!t('axiom P : Prop\ntheorem t : P := by\n  intro h').ok, '目標不是 Π 時 intro 失敗');
+ok(t('axiom P : Prop\ntheorem t : P := by\n  sorry').cmds[1].status === 'sorry', 'sorry 會被標記');
+ok(t('axiom P : Prop\ntheorem t : P -> P := by\n  intro h').cmds[1].status === 'open', '未完成的證明回報 open');
+ok(!t('check Type').ok, 'Type 沒有型別');
+process.exit(fail ? 1 : 0);

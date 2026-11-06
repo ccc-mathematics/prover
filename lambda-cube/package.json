@@ -1,0 +1,8 @@
+{
+  "name": "lambda-cube-prover",
+  "version": "1.0.0",
+  "description": "λ-cube(含 λC)證明助手:可選系統、策略層與型別核心,命令列與網頁版",
+  "bin": { "cube": "bin/cli.js" },
+  "scripts": { "demo": "node bin/cli.js --demo", "test": "node test/test.js", "build": "node scripts/build-web.js" },
+  "license": "MIT"
+}

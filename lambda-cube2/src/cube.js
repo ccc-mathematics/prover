@@ -1,0 +1,335 @@
+/* λ-cube 證明助手 — 核心(Node 與瀏覽器共用)
+   項只有 5 種節點:變數、sort、應用、λ、Π(內部用 de Bruijn index)。連接詞全由 Π 型別定義出來。 */
+(function () {
+'use strict';
+const CUBE = { 'λ→': [], 'λ2': ['Type>Prop'], 'λP': ['Prop>Type'], 'λω_': ['Type>Type'], 'λP2': ['Type>Prop', 'Prop>Type'],
+  'λω': ['Type>Prop', 'Type>Type'], 'λPω_': ['Prop>Type', 'Type>Type'], 'λC': ['Type>Prop', 'Prop>Type', 'Type>Type'] };
+const V = i => ({ k: 'v', i }), Sx = s => ({ k: 's', s }), Ap = (f, a) => ({ k: 'a', f, a }), Cn = n => ({ k: 'c', n }), Mv = id => ({ k: 'm', id });
+const Lm = (n, ty, b) => ({ k: 'l', n, ty, b }), Pi = (n, ty, b) => ({ k: 'p', n, ty, b });
+const bind = t => t.k === 'l' || t.k === 'p';
+const shift = (t, d, c = 0) => t.k === 'v' ? (t.i >= c ? V(t.i + d) : t) : t.k === 'a' ? Ap(shift(t.f, d, c), shift(t.a, d, c))
+  : bind(t) ? { k: t.k, n: t.n, ty: shift(t.ty, d, c), b: shift(t.b, d, c + 1) } : t;
+const subst = (t, j, s) => t.k === 'v' ? (t.i === j ? s : t) : t.k === 'a' ? Ap(subst(t.f, j, s), subst(t.a, j, s))
+  : bind(t) ? { k: t.k, n: t.n, ty: subst(t.ty, j, s), b: subst(t.b, j + 1, shift(s, 1)) } : t;
+const inst = (b, a) => shift(subst(b, 0, shift(a, 1)), -1);
+const uses = (t, j = 0) => t.k === 'v' ? t.i === j : t.k === 'a' ? uses(t.f, j) || uses(t.a, j) : bind(t) ? uses(t.ty, j) || uses(t.b, j + 1) : false;
+
+const spine = t => { const a = []; while (t.k === 'a') { a.unshift(t.a); t = t.f; } return [t, a]; };
+const key = t => t.k === 'v' ? 'v' + t.i : t.k === 's' ? t.s : t.k === 'c' ? 'c' + t.n : t.k === 'a' ? '(' + key(t.f) + ' ' + key(t.a) + ')' : bind(t) ? t.k + '[' + key(t.ty) + ']' + key(t.b) : t.k;
+const absT = (t, a, k = 0) => key(t) === key(shift(a, k)) ? V(k) : t.k === 'a' ? Ap(absT(t.f, a, k), absT(t.a, a, k)) : bind(t) ? { k: t.k, n: t.n, ty: absT(t.ty, a, k), b: absT(t.b, a, k + 1) } : t;
+
+/* ── 顯示 ── */
+const par = (s, c) => c ? '(' + s + ')' : s;
+function show(t, ns = [], q = 0) {
+  switch (t.k) {
+    case 'v': return ns[ns.length - 1 - t.i] ?? '#' + t.i;
+    case 's': return t.s;
+    case 'c': return t.n;
+    case 'm': return '?' + t.id;
+    case 'z': return 'sorry';
+    case 'a': return par(show(t.f, ns, 2) + ' ' + show(t.a, ns, 3), q > 2);
+  }
+  if (t.k === 'p' && !uses(t.b)) return par(show(t.ty, ns, 2) + ' → ' + show(t.b, [...ns, '_'], 1), q > 1);
+  let n = t.n === '_' ? 'x' : t.n; while (ns.includes(n)) n += "'";
+  const h = `(${n} : ${show(t.ty, ns)})`, b = show(t.b, [...ns, n]);
+  return par(t.k === 'p' ? `∀ ${h}, ${b}` : `fun ${h} => ${b}`, q > 0);
+}
+
+/* ── 解析 ── */
+const tok = s => s.replace(/λ/g, ' fun ').replace(/[Π∀]/g, ' forall ').replace(/→/g, '->').replace(/⇒/g, '=>').match(/:=|->|=>|[A-Za-z_][\w']*|\S/g) || [];
+const isId = x => x && /^[A-Za-z_]/.test(x) && x !== 'fun' && x !== 'forall';
+function parser(src, names, G) {
+  const T = tok(src); let p = 0; const ns = [...names];
+  const err = m => new Error(`${m}(附近:${T.slice(Math.max(0, p - 3), p + 1).join(' ') || '結尾'})`);
+  const ex = t => { if (T[p++] !== t) throw err(`語法錯誤:預期 "${t}"`); };
+  const id = () => { const x = T[p++]; if (!isId(x)) throw err('語法錯誤:這裡需要名稱'); return x; };
+  const atom = () => {
+    const x = T[p++];
+    if (x === '(') { const t = term(); ex(')'); return t; }
+    if (x === 'Prop' || x === 'Type') return Sx(x);
+    if (!isId(x)) { p--; throw err('語法錯誤:這裡需要一個項'); }
+    const i = ns.lastIndexOf(x); if (i >= 0) return V(ns.length - 1 - i);
+    if (G[x]) return Cn(x);
+    throw new Error(`未定義的名稱 ${x}`);
+  };
+  const app = () => { let t = atom(); while (p < T.length && (T[p] === '(' || isId(T[p]))) t = Ap(t, atom()); return t; };
+  const arrow = () => { const l = app(); if (T[p] !== '->') return l; p++; ns.push('_'); const r = term(); ns.pop(); return Pi('_', l, r); };
+  const binders = () => {
+    const bs = [], one = () => {
+      const names = []; while (T[p] !== ':') names.push(id()); p++;
+      const ty = term(); names.forEach((n, j) => { bs.push({ n, ty: shift(ty, j) }); ns.push(n); });
+    };
+    if (T[p] === '(') while (T[p] === '(') { p++; one(); ex(')'); } else one();
+    return bs;
+  };
+  const term = () => {
+    const x = T[p];
+    if (x === 'fun' || x === 'forall') {
+      p++; const bs = binders();
+      if (T[p] === '=>' || T[p] === ',' || T[p] === '.') p++; else throw err('語法錯誤:binder 後需要 "=>"(fun)或 ","(forall)');
+      const b = term(); ns.length -= bs.length;
+      return bs.reduceRight((r, q) => (x === 'fun' ? Lm : Pi)(q.n, q.ty, r), b);
+    }
+    return arrow();
+  };
+  return { term, binders, id, ex, err, peek: () => T[p], done: () => p >= T.length };
+}
+
+/* ── 可信核心:型別推導、化簡(β 與定義展開 δ)、定義等價 ── */
+function kernel(G, rules, fl) {
+  const E = m => new Error(m);
+  const whnf = t => { for (;;) {
+    if (t.k === 'a') {
+      const sp = []; let h = t; while (h.k === 'a') { sp.unshift(h.a); h = h.f; }
+      if (h.k === 'c' && h.n === 'Nat_rec' && sp.length >= 4) { // ι 化簡:遞迴子作用在 zero / succ 上
+        const m = whnf(sp[3]); let r = null;
+        if (m.k === 'c' && m.n === 'zero') r = sp[1];
+        else if (m.k === 'a' && m.f.k === 'c' && m.f.n === 'succ') r = Ap(Ap(sp[2], m.a), Ap(Ap(Ap(Ap(Cn('Nat_rec'), sp[0]), sp[1]), sp[2]), m.a));
+        if (r) { t = sp.slice(4).reduce((f, x) => Ap(f, x), r); continue; }
+      }
+    }
+    if (t.k === 'a') { const f = whnf(t.f); if (f.k === 'l') { t = inst(f.b, t.a); continue; } return Ap(f, t.a); }
+    if (t.k === 'c' && G[t.n] && G[t.n].val) { t = G[t.n].val; continue; }
+    return t;
+  } };
+  const conv = (a, b) => {
+    a = whnf(a); b = whnf(b); if (a.k !== b.k) return false;
+    switch (a.k) {
+      case 'v': return a.i === b.i; case 's': return a.s === b.s; case 'c': return a.n === b.n;
+      case 'a': return conv(a.f, b.f) && conv(a.a, b.a);
+      case 'l': case 'p': return conv(a.ty, b.ty) && conv(a.b, b.b);
+    }
+    return false;
+  };
+  const nf = t => { t = whnf(t); return t.k === 'a' ? Ap(nf(t.f), nf(t.a)) : bind(t) ? { k: t.k, n: t.n, ty: nf(t.ty), b: nf(t.b) } : t; };
+  const names = ctx => ctx.map(e => e.n);
+  const sort = (ctx, T) => { const s = whnf(infer(ctx, T)); if (s.k !== 's') throw E(`${show(T, names(ctx))} 不是型別`); return s.s; };
+  function infer(ctx, t) {
+    switch (t.k) {
+      case 'v': { const e = ctx[ctx.length - 1 - t.i]; if (!e) throw E('自由變數'); return shift(e.ty, t.i + 1); }
+      case 's': if (t.s === 'Prop') return Sx('Type'); throw E('Type 沒有型別(λ-cube 的最頂層)');
+      case 'c': return G[t.n].ty;
+      case 'z': fl.sorry = true; return t.ty;
+      case 'm': throw E('仍有未解決的目標');
+      case 'p': {
+        const s1 = sort(ctx, t.ty), s2 = sort([...ctx, { n: t.n, ty: t.ty }], t.b);
+        if (!rules.has(s1 + '>' + s2)) throw E(`目前的系統不允許這個 Π 型別:定義域屬於 ${s1},值域屬於 ${s2}(缺少規則 ${s1}>${s2}):${show(t, names(ctx))}`);
+        return Sx(s2);
+      }
+      case 'l': { sort(ctx, t.ty); const T = Pi(t.n, t.ty, infer([...ctx, { n: t.n, ty: t.ty }], t.b)); infer(ctx, T); return T; }
+      case 'a': {
+        const tf = whnf(infer(ctx, t.f)), ns = names(ctx);
+        if (tf.k !== 'p') throw E(`${show(t.f, ns)} 不是函數,它的型別是 ${show(tf, ns)}`);
+        const ta = infer(ctx, t.a);
+        if (!conv(ta, tf.ty)) throw E(`型別不吻合:${show(t.a, ns)} 的型別是 ${show(ta, ns)},但這裡需要 ${show(tf.ty, ns)}`);
+        return inst(tf.b, t.a);
+      }
+    }
+  }
+  return { infer, sort, whnf, conv, nf };
+}
+
+/* ── 策略層:每個策略替第一個目標指派一個含洞(meta)的證明項 ── */
+function tactic(K, G, S, name, arg) {
+  const g = S.goals[0]; if (!g) throw new Error('已經沒有目標了');
+  const ctx = g.ctx, ns = ctx.map(e => e.n), d = ctx.length;
+  const solve = (pf, gs = []) => { S.assign[g.id] = pf; S.goals = [...gs, ...S.goals.slice(1)]; };
+  const mk = (c, ty) => ({ id: ++S.n, ctx: c, ty });
+  const prs = src => { const q = parser(src, ns, G), t = q.term(); if (!q.done()) throw q.err('語法錯誤:多餘的符號'); return t; };
+  const ws = arg.trim() ? arg.trim().split(/\s+/) : [];
+  switch (name) {
+    case 'intro': {
+      if (ws.length > 1) return ws.forEach(w => tactic(K, G, S, 'intro', w));
+      const T = K.whnf(g.ty); if (T.k !== 'p') throw new Error(`intro 失敗:目標 ${show(g.ty, ns)} 不是 → 或 ∀`);
+      const n = ws[0] || (T.n === '_' ? 'h' : T.n), ng = mk([...ctx, { n, ty: T.ty }], T.b);
+      return solve(Lm(n, T.ty, Mv(ng.id)), [ng]);
+    }
+    case 'exact': {
+      const t = prs(arg), ty = K.infer(ctx, t);
+      if (!K.conv(ty, g.ty)) throw new Error(`exact 的型別不吻合:\n  得到 ${show(ty, ns)}\n  需要 ${show(g.ty, ns)}`);
+      return solve(t);
+    }
+    case 'assumption': { for (let j = d; j--; ) if (K.conv(shift(ctx[j].ty, d - j), g.ty)) return solve(V(d - 1 - j)); throw new Error('找不到符合目標的假設'); }
+    case 'have': {
+      const [lhs, val] = arg.split(':='), i = lhs.indexOf(':'); if (i < 0) throw new Error('格式:have 名稱 : 型別 [:= 項]');
+      const n = lhs.slice(0, i).trim(), T = prs(lhs.slice(i + 1)); K.sort(ctx, T);
+      const c2 = [...ctx, { n, ty: T }], ty2 = shift(g.ty, 1);
+      if (val !== undefined) {
+        const t = prs(val), ty = K.infer(ctx, t); if (!K.conv(ty, T)) throw new Error(`have 的項型別不吻合:得到 ${show(ty, ns)}`);
+        const g2 = mk(c2, ty2); return solve(Ap(Lm(n, T, Mv(g2.id)), t), [g2]);
+      }
+      const g1 = mk(ctx, T), g2 = mk(c2, ty2); return solve(Ap(Lm(n, T, Mv(g2.id)), Mv(g1.id)), [g1, g2]);
+    }
+    case 'apply': { // 依賴型參數(∀)用合一變數自動推出
+      const t = prs(arg), T0 = K.infer(ctx, t), U = {}, args = [], prem = []; let cur = T0, nu = 0;
+      const zk = (x, dd = 0) => x.k === 'u' ? (U[x.id] ? shift(zk(U[x.id]), dd) : x) : x.k === 'a' ? Ap(zk(x.f, dd), zk(x.a, dd)) : bind(x) ? { k: x.k, n: x.n, ty: zk(x.ty, dd), b: zk(x.b, dd + 1) } : x;
+      const low = (x, dd, c = 0) => x.k === 'v' ? x.i >= c && x.i - c < dd : x.k === 'a' ? low(x.f, dd, c) || low(x.a, dd, c) : bind(x) ? low(x.ty, dd, c) || low(x.b, dd, c + 1) : false;
+      const occ = (x, id) => x.k === 'u' ? x.id === id : x.k === 'a' ? occ(x.f, id) || occ(x.a, id) : bind(x) ? occ(x.ty, id) || occ(x.b, id) : false;
+      const bindU = (u, x, dd) => (x.k === 'u' && x.id === u.id) || (!occ(x, u.id) && !low(x, dd) && ((U[u.id] = shift(x, -dd)), true));
+      const un = (a, b, dd = 0) => {
+        a = K.whnf(zk(a, dd)); b = K.whnf(zk(b, dd));
+        if (a.k === 'u') return bindU(a, b, dd); if (b.k === 'u') return bindU(b, a, dd);
+        if (a.k !== b.k) return false;
+        switch (a.k) { case 'v': return a.i === b.i; case 's': return a.s === b.s; case 'c': return a.n === b.n; case 'a': return un(a.f, b.f, dd) && un(a.a, b.a, dd); default: return un(a.ty, b.ty, dd) && un(a.b, b.b, dd + 1); }
+      };
+      for (;;) {
+        const snap = { ...U };
+        if (un(cur, g.ty)) break;
+        for (const k in U) delete U[k]; Object.assign(U, snap);
+        cur = K.whnf(zk(cur));
+        if (cur.k !== 'p') throw new Error(`apply 失敗:${show(T0, ns)} 的結論無法吻合目標 ${show(g.ty, ns)}`);
+        if (uses(cur.b)) { const u = { k: 'u', id: ++nu }; args.push(u); cur = inst(cur.b, u); }
+        else { const x = mk(ctx, cur.ty); prem.push(x); args.push(Mv(x.id)); cur = shift(cur.b, -1); }
+      }
+      if (args.some(x => x.k === 'u' && !U[x.id])) throw new Error('apply 無法自動推出所有參數,請把缺少的參數寫出來(例如 apply h a)');
+      prem.forEach(x => { x.ty = zk(x.ty); });
+      return solve(args.reduce((p, x) => Ap(p, zk(x)), t), prem);
+    }
+    case 'rfl': {
+      const [h, a] = spine(g.ty); if (!(h.k === 'c' && h.n === 'Eq' && a.length === 3 && G.refl)) throw new Error('rfl 只適用於 Eq A x y 型的目標(需要 import eq)');
+      if (!K.conv(a[1], a[2])) throw new Error(`rfl 失敗:${show(a[1], ns)} 與 ${show(a[2], ns)} 並非定義等價`);
+      return solve(Ap(Ap(Cn('refl'), a[0]), a[1]));
+    }
+    case 'symm': {
+      const [h, a] = spine(g.ty); if (!(h.k === 'c' && h.n === 'Eq' && a.length === 3 && G.symm)) throw new Error('symm 只適用於 Eq A x y 型的目標(需要 import eq)');
+      const n = mk(ctx, Ap(Ap(Ap(Cn('Eq'), a[0]), a[2]), a[1])); return solve(Ap(Ap(Ap(Ap(Cn('symm'), a[0]), a[2]), a[1]), Mv(n.id)), [n]);
+    }
+    case 'rw': { // rw h:把目標中的 a 換成 b;rw ← h:把 b 換成 a(h : Eq A a b)
+      const rev = ws[0] === '←' || ws[0] === '<-', t = prs(rev ? arg.trim().slice(ws[0].length) : arg), [h, a] = spine(K.infer(ctx, t));
+      if (!(h.k === 'c' && h.n === 'Eq' && a.length === 3 && G.symm)) throw new Error('rw 需要型別為 Eq A a b 的假設(並 import eq)');
+      const [A, l, r] = rev ? [a[0], a[2], a[1]] : a, body = absT(shift(g.ty, 1), shift(l, 1));
+      if (!uses(body)) throw new Error(`rw 失敗:目標裡找不到 ${show(l, ns)}`);
+      const ng = mk(ctx, inst(body, r)), eqf = rev ? t : Ap(Ap(Ap(Ap(Cn('symm'), A), a[1]), a[2]), t);
+      return solve(Ap(Ap(eqf, Lm('z', A, body)), Mv(ng.id)), [ng]);
+    }
+    case 'induction': { // induction n [with k ih]:對 Nat 變數做歸納,產生 base 與 step 兩個目標
+      const [x, k = 'k', ih = 'ih'] = ws.filter(w => w !== 'with'); let j = d; while (j--) if (ctx[j].n === x) break;
+      if (j < 0) throw new Error(`找不到變數 ${x}`);
+      if (!G.Nat || !K.conv(shift(ctx[j].ty, d - j), Cn('Nat'))) throw new Error('induction 目前只支援 Nat 變數(需要 import nat)');
+      const idx = d - 1 - j, motive = Lm('z', Cn('Nat'), absT(shift(g.ty, 1), V(idx + 1)));
+      const base = mk(ctx, inst(motive.b, Cn('zero'))), pk = inst(shift(motive, 1).b, V(0));
+      const step = mk([...ctx, { n: k, ty: Cn('Nat') }, { n: ih, ty: pk }], inst(shift(motive, 2).b, Ap(Cn('succ'), V(1))));
+      return solve(Ap(Ap(Ap(Ap(Cn('Nat_rec'), motive), Mv(base.id)), Lm(k, Cn('Nat'), Lm(ih, pk, Mv(step.id)))), V(idx)), [base, step]);
+    }
+    case 'sorry': return solve({ k: 'z', ty: g.ty });
+  }
+  throw new Error(`未知的策略 ${name}`);
+}
+const fill = (t, A) => t.k === 'm' ? fill(A[t.id], A) : t.k === 'a' ? Ap(fill(t.f, A), fill(t.a, A)) : bind(t) ? { k: t.k, n: t.n, ty: t.ty, b: fill(t.b, A) } : t;
+
+/* ── 套件:用 import eq / import nat 載入,內容照一般指令檢查 ── */
+const PRE = {
+  eq: `def Eq (A : Prop) (x y : A) : Prop := forall (P : A -> Prop), P x -> P y
+theorem refl (A : Prop) (x : A) : Eq A x x := by
+  intro P h
+  exact h
+theorem symm (A : Prop) (x y : A) (h : Eq A x y) : Eq A y x := by
+  intro P
+  exact h (fun (z : A) => P z -> P x) (fun (hx : P x) => hx)
+theorem trans (A : Prop) (x y z : A) (h1 : Eq A x y) (h2 : Eq A y z) : Eq A x z := by
+  intro P hx
+  exact h2 P (h1 P hx)
+theorem congr (A B : Prop) (f : A -> B) (x y : A) (h : Eq A x y) : Eq B (f x) (f y) := by
+  intro P hf
+  exact h (fun (z : A) => P (f z)) hf`,
+  nat: `def add (m n : Nat) : Nat := Nat_rec (fun (_ : Nat) => Nat) m (fun (k : Nat) (r : Nat) => succ r) n`,
+};
+function installNat(G) { // Nat 是核心原語:zero、succ 與遞迴子 Nat_rec(附 ι 化簡)
+  G.Nat = { ty: Sx('Prop') }; G.zero = { ty: Cn('Nat') }; G.succ = { ty: Pi('_', Cn('Nat'), Cn('Nat')) };
+  G.Nat_rec = { ty: parser('forall (P : Nat -> Prop), P zero -> (forall (n : Nat), P n -> P (succ n)) -> forall (n : Nat), P n', [], G).term() };
+}
+
+/* ── 執行腳本 ── */
+function runScript(text, ext) {
+  const L = text.split('\n').map(l => l.replace(/--.*$/, '')), G = ext ? ext.G : {}, fl = ext ? ext.fl : {}; let sys = 'λC', rules, K;
+  const setSys = n => { if (!CUBE[n]) throw new Error(`未知的系統 ${n},可用:${Object.keys(CUBE).join(' ')}`); sys = n; rules = new Set(['Prop>Prop', ...CUBE[n]]); K = kernel(G, rules, fl); };
+  if (ext) K = ext.K; else setSys('λC');
+  const starts = []; L.forEach((l, i) => /^(def|theorem|axiom|check|eval|system|import)\b/.test(l) && starts.push(i));
+  const R = { cmds: [], states: {}, info: {}, errors: {}, lines: L };
+  const wrap = (mkr, bs, b) => bs.reduceRight((r, q) => mkr(q.n, q.ty, r), b);
+  const head = q => { const name = q.id(), bs = q.peek() === '(' ? q.binders() : []; q.ex(':'); return { name, bs, ty: q.term() }; };
+  for (let c = 0; c < starts.length; c++) {
+    const s = starts[c], e = starts[c + 1] ?? L.length, kind = L[s].trim().match(/^\w+/)[0], cmd = { kind, line: s, end: e, status: 'ok' };
+    R.cmds.push(cmd);
+    try {
+      let body = L.slice(s, e).join(' ').trim().slice(kind.length).trim();
+      if (kind === 'import') {
+        if (!PRE[body]) throw new Error(`未知的套件 ${body},可用:${Object.keys(PRE).join(' ')}`);
+        if (body === 'nat') installNat(G);
+        const sub = runScript(PRE[body], { G, K, fl }), bad = sub.cmds.find(c => c.status !== 'ok');
+        if (bad) throw new Error(`套件 ${body} 在目前的系統無法載入(通常需要 λC):${bad.msg}`);
+        cmd.text = `${body}  (${sub.cmds.map(c => c.text.split(' ')[0]).join(' ')})`;
+      } else if (kind === 'system') { setSys(body); cmd.text = `${sys}  規則:${[...rules].join('  ')}`; }
+      else if (kind === 'check' || kind === 'eval') {
+        const q = parser(body, [], G), t = q.term(); if (!q.done()) throw q.err('語法錯誤:多餘的符號');
+        cmd.text = `${show(kind === 'eval' ? K.nf(t) : t)} : ${show(K.infer([], t))}`;
+      } else if (kind === 'theorem') {
+        let h = s; while (h < e && !/:=\s*by\s*$/.test(L[h])) h++;
+        if (h >= e) throw new Error('theorem 標頭需要以 ":= by" 結尾');
+        const q = parser(L.slice(s, h + 1).join(' ').trim().slice(7).replace(/:=\s*by\s*$/, ''), [], G), { name, bs, ty } = head(q);
+        if (!q.done()) throw q.err('語法錯誤:多餘的符號');
+        const decl = wrap(Pi, bs, ty); K.sort([], decl); G[name] = { ty: decl }; cmd.text = `${name} : ${show(decl)}`;
+        const S = { goals: [], assign: {}, n: 0 }, g0 = { id: ++S.n, ctx: bs, ty }; S.goals = [g0];
+        for (let i = s; i <= h; i++) R.states[i] = S.goals;
+        let failed = false;
+        for (let i = h + 1; i < e; i++) {
+          const t = L[i].trim().replace(/^[·•*-]\s+/, '');
+          if (t && !failed) try { const m = t.match(/^(\w+)\s*(.*)$/); if (!m) throw new Error('看不懂這一行'); tactic(K, G, S, m[1], m[2]); }
+            catch (x) { failed = true; cmd.status = 'error'; cmd.msg = `第 ${i + 1} 行:${x.message}`; cmd.errLine = i; R.errors[i] = x.message; }
+          R.states[i] = S.goals;
+        }
+        if (!failed) {
+          if (S.goals.length) { cmd.status = 'open'; cmd.msg = `還有 ${S.goals.length} 個目標未完成`; }
+          else {
+            fl.sorry = false; const full = wrap(Lm, bs, fill(S.assign[g0.id], S.assign));
+            if (!K.conv(K.infer([], full), decl)) throw new Error('核心推出的型別與宣告不符');
+            if (fl.sorry) cmd.status = 'sorry';
+          }
+        }
+      } else {
+        const q = parser(body, [], G), { name, bs, ty } = head(q), pis = wrap(Pi, bs, ty);
+        if (kind === 'def') {
+          q.ex(':='); const val = wrap(Lm, bs, q.term());
+          K.sort([], pis); if (!K.conv(K.infer([], val), pis)) throw new Error('定義的內容與宣告的型別不吻合');
+          if (!q.done()) throw q.err('語法錯誤:多餘的符號'); G[name] = { ty: pis, val };
+        } else { if (!q.done()) throw q.err('語法錯誤:多餘的符號'); K.sort([], pis); G[name] = { ty: pis }; }
+        cmd.text = `${name} : ${show(pis)}`;
+      }
+      if (kind !== 'theorem') for (let i = s; i < e; i++) R.info[i] = cmd.text;
+    } catch (x) { cmd.status = 'error'; cmd.msg = x.message; R.errors[s] = x.message; }
+  }
+  R.system = sys; R.ok = R.cmds.every(c => c.status === 'ok');
+  return R;
+}
+
+/* ── 輸出 ── */
+const showGoal = g => [...g.ctx.map((e, i) => `${e.n} : ${show(e.ty, g.ctx.slice(0, i).map(x => x.n))}`), '⊢ ' + show(g.ty, g.ctx.map(x => x.n))].join('\n');
+const showGoals = gs => gs.length ? (gs.length > 1 ? gs.length + ' 個目標\n\n' : '') + gs.map(showGoal).join('\n\n') : '沒有目標了';
+const ICON = { ok: '✔', sorry: '⚠', open: '…', error: '✘' };
+function report(R, trace) {
+  const ind = (s, k) => s.split('\n').map(x => ' '.repeat(k) + x), o = [`系統 ${R.system}`];
+  for (const c of R.cmds) {
+    o.push(`${ICON[c.status]} ${c.kind} ${c.text || ''}`.trimEnd());
+    if (trace && c.kind === 'theorem') for (let i = c.line + 1; i < c.end; i++) if (R.lines[i].trim() && R.states[i] && !(i in R.errors)) o.push('    ' + R.lines[i].trim(), ...ind(showGoals(R.states[i]), 8));
+    if (c.msg) o.push(...ind(c.msg, 4));
+    if (c.errLine !== undefined) o.push(...ind(showGoals(R.states[c.errLine]), 6));
+    if (c.status === 'open') o.push(...ind(showGoals(R.states[c.end - 1]), 6));
+  }
+  return o.join('\n');
+}
+
+const examples = [
+  { name: '簡單型別 λ→', src: 'system λ→\naxiom P : Prop\ntheorem id_p : P -> P := by\n  intro h\n  exact h' },
+  { name: '多型恆等函數 λ2', src: 'system λ2\ndef id : forall (A : Prop), A -> A := fun (A : Prop) (x : A) => x\ncheck id\n-- 把 id 套用在它自己的型別上(impredicative)\neval id (forall (B : Prop), B -> B) id' },
+  { name: 'Church 編碼的 ∧(λω)', src: 'system λω\ndef And (A B : Prop) : Prop := forall (C : Prop), (A -> B -> C) -> C\ndef and_intro (A B : Prop) (a : A) (b : B) : And A B := fun (C : Prop) (f : A -> B -> C) => f a b\ntheorem and_swap (A B : Prop) (h : And A B) : And B A := by\n  intro C f\n  apply h\n  intro a b\n  apply f\n  assumption\n  assumption' },
+  { name: 'Church 編碼的 ∨(λω)', src: 'system λω\ndef Or (A B : Prop) : Prop := forall (C : Prop), (A -> C) -> (B -> C) -> C\ntheorem or_comm (A B : Prop) (h : Or A B) : Or B A := by\n  intro C f g\n  apply h\n  intro a\n  apply g\n  assumption\n  intro b\n  apply f\n  assumption' },
+  { name: '依值型別 Vec(λP)', src: 'system λP\naxiom Nat : Prop\naxiom zero : Nat\naxiom succ : Nat -> Nat\naxiom Vec : Nat -> Prop\naxiom nil : Vec zero\naxiom cons : forall (n : Nat), Vec n -> Vec (succ n)\ncheck cons zero nil\ncheck cons (succ zero) (cons zero nil)' },
+  { name: '存在量詞(λC)', src: 'system λC\ndef Ex (A : Prop) (P : A -> Prop) : Prop := forall (C : Prop), (forall (x : A), P x -> C) -> C\ntheorem ex_intro (A : Prop) (P : A -> Prop) (a : A) (h : P a) : Ex A P := by\n  intro C f\n  apply f a\n  assumption' },
+  { name: '等式:對稱與傳遞(λC)', src: 'system λC\nimport eq\ntheorem eq_flip (A : Prop) (x y z : A) (h1 : Eq A x y) (h2 : Eq A y z) : Eq A z x := by\n  symm\n  exact trans A x y z h1 h2' },
+  { name: 'rw 改寫(λC)', src: 'system λC\nimport eq\ntheorem rw_demo (A : Prop) (f : A -> A) (a b : A) (h : Eq A a b) (Q : A -> Prop) (hq : Q (f b)) : Q (f a) := by\n  rw h\n  assumption' },
+  { name: '歸納法:0 + n = n(λC)', src: 'system λC\nimport eq\nimport nat\ntheorem zero_add (n : Nat) : Eq Nat (add zero n) n := by\n  induction n with k ih\n  rfl\n  exact congr Nat Nat succ (add zero k) k ih' },
+  { name: 'λ→ 不允許多型(錯誤示範)', src: 'system λ→\ndef id : forall (A : Prop), A -> A := fun (A : Prop) (x : A) => x' },
+];
+const API = { CUBE, runScript, report, showGoals, examples };
+if (typeof module !== 'undefined' && module.exports) module.exports = API; else globalThis.Cube = API;
+})();

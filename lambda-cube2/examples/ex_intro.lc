@@ -1,0 +1,6 @@
+system λC
+def Ex (A : Prop) (P : A -> Prop) : Prop := forall (C : Prop), (forall (x : A), P x -> C) -> C
+theorem ex_intro (A : Prop) (P : A -> Prop) (a : A) (h : P a) : Ex A P := by
+  intro C f
+  apply f a
+  assumption

@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>λ-cube 證明助手</title>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#f1f4f1;--ink:#1c2b27;--mut:#667570;--pan:#fff;--line:#cfd8d3;--acc:#0f6b5c;--bad:#a4432b;color-scheme:light;
+ box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#121917;--ink:#e4ece8;--mut:#8fa19b;--pan:#1b2523;--line:#2e3b37;--acc:#5fc9b3;--bad:#e58a71;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#121917;--ink:#e4ece8;--mut:#8fa19b;--pan:#1b2523;--line:#2e3b37;--acc:#5fc9b3;--bad:#e58a71;color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:18px/1.7 Newsreader,"Noto Serif TC",Georgia,serif}
+main{max-width:760px;margin:0 auto;padding:28px 18px 64px}
+h1{font-size:2rem;line-height:1.2;margin:0 0 6px;font-weight:600}
+.sub{color:var(--mut);margin:0 0 22px}
+label{display:block;font-weight:600;margin:16px 0 6px}
+textarea,select{width:100%;font:15px/1.7 "JetBrains Mono",ui-monospace,Menlo,monospace;color:var(--ink);background:var(--pan);border:1px solid var(--line);border-radius:6px;padding:10px 12px}
+textarea{min-height:260px;resize:vertical;tab-size:2}
+select{font-family:inherit;font-size:16px}
+:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.st{font-weight:600;margin:16px 0 4px}.st.ok{color:var(--acc)}.st.bad{color:var(--bad)}
+ul{list-style:none;margin:6px 0 0;padding:0;border-left:3px solid var(--line)}
+li{padding:3px 0 3px 12px;font:14px/1.6 "JetBrains Mono",ui-monospace,monospace;word-break:break-word}
+li.ok b{color:var(--acc)}li.error b{color:var(--bad)}li.open b,li.sorry b{color:var(--mut)}
+li small{display:block;color:var(--bad);white-space:pre-wrap}
+.bar{display:flex;align-items:center;gap:8px;margin:18px 0 8px}
+.bar span{flex:1;color:var(--mut);font-size:.92rem}
+button{font:inherit;font-size:.92rem;color:var(--ink);background:transparent;border:1px solid var(--line);border-radius:6px;padding:4px 14px;cursor:pointer}
+pre{margin:0;font:15px/1.7 "JetBrains Mono",ui-monospace,monospace;white-space:pre-wrap;word-break:break-word}
+#goals{background:#1d2b28;color:#e4ece8;border-radius:8px;padding:14px 16px;min-height:6em}
+details{margin-top:18px}summary{cursor:pointer;font-weight:600}
+details pre{margin-top:8px;color:var(--mut);font-size:14px}
+</style>
+</head>
+<body>
+<main>
+<h1>λ-cube 證明助手</h1>
+<p class="sub">只有變數、sort、應用、λ、Π 五種節點。∧、∨、∃、False 都用 Π 型別編碼出來,第一行的 system 決定使用 λ-cube 的哪個頂點。</p>
+<label for="ex">範例</label>
+<select id="ex"></select>
+<label for="src">腳本(點選任一行,查看該行之後的目標或型別)</label>
+<textarea id="src" spellcheck="false" autocapitalize="off" autocorrect="off"></textarea>
+<p class="st" id="status"></p>
+<ul id="res"></ul>
+<div class="bar"><button id="prev" aria-label="上一行">◀</button><button id="next" aria-label="下一行">▶</button><span id="where"></span></div>
+<pre id="goals" aria-live="polite"></pre>
+<details><summary>語法與策略速查</summary><pre>system λC            選擇系統:λ→ λ2 λP λω_ λP2 λω λPω_ λC
+def f (x : A) : B := t      定義(可被展開);axiom c : T 公理
+check t / eval t     顯示型別 / 化簡後的項與型別
+theorem T (h : A) : B := by 後面接策略:
+  intro x y     目標是 → 或 ∀(Church 編碼的 ∧ ∨ ∃ 也適用)
+  exact t       用項直接完成
+  apply t       目標吻合 t 的結論時,為前提開新目標
+  assumption    目標剛好是某個假設
+  have h : T [:= t]   加入新假設;沒有 := 時要先證明 T
+  sorry         暫時跳過(會被標記)
+
+項:fun (x : A) =&gt; t、forall (x : A), B、A -&gt; B、f a b、Prop、Type
+也接受 λ Π ∀ →。Prop 相當於 *,Type 相當於 □。
+規則 Type&gt;Prop = 多型(System F)、Prop&gt;Type = 依值型別、Type&gt;Type = 型別運算子。</pre></details>
+</main>
+<script>/*CUBE*/</script>
+<script>
+const $=id=>document.getElementById(id),ta=$('src'),X=Cube.examples;
+X.forEach((e,i)=>$('ex').add(new Option(e.name,i)));
+let R=null;
+const el=(t,c,x)=>{const n=document.createElement(t);if(c)n.className=c;if(x!==undefined)n.textContent=x;return n};
+const lineAt=()=>ta.value.slice(0,ta.selectionStart).split('\n').length-1;
+function compute(){
+  R=Cube.runScript(ta.value);
+  const bad=R.cmds.filter(c=>c.status!=='ok').length,s=$('status');
+  s.className='st '+(bad?'bad':'ok');
+  s.textContent=bad?`${bad} 個指令未通過(系統 ${R.system})`:`✔ 全部通過(系統 ${R.system})`;
+  const ul=$('res');ul.textContent='';
+  R.cmds.forEach(c=>{const li=el('li',c.status);li.append(el('b','',({ok:'✔',sorry:'⚠',open:'…',error:'✘'})[c.status]+' '),document.createTextNode(c.kind+' '+(c.text||'')));
+    if(c.msg)li.append(el('small','',c.msg));ul.append(li)});
+  render();
+}
+function render(){
+  if(!R)return;
+  const li=Math.min(lineAt(),R.lines.length-1);
+  $('where').textContent=`第 ${li+1} 行`;
+  $('goals').textContent=R.states[li]?Cube.showGoals(R.states[li]):R.info[li]||'(這一行沒有目標或型別資訊)';
+}
+function go(d){
+  const ls=ta.value.split('\n'),i=Math.max(0,Math.min(ls.length-1,lineAt()+d));
+  let pos=0;for(let k=0;k<i;k++)pos+=ls[k].length+1;
+  ta.setSelectionRange(pos+ls[i].length,pos+ls[i].length);render();
+}
+function load(i){ta.value=X[i].src;ta.setSelectionRange(ta.value.length,ta.value.length);compute()}
+$('ex').onchange=e=>load(e.target.value);
+ta.addEventListener('input',compute);
+['click','keyup'].forEach(t=>ta.addEventListener(t,render));
+$('prev').onclick=()=>go(-1);$('next').onclick=()=>go(1);
+load(2);$('ex').value=2;
+</script>
+</body>
+</html>

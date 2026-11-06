@@ -1,0 +1,11 @@
+system λω
+def Or (A B : Prop) : Prop := forall (C : Prop), (A -> C) -> (B -> C) -> C
+theorem or_comm (A B : Prop) (h : Or A B) : Or B A := by
+  intro C f g
+  apply h C
+  intro a
+  apply g
+  assumption
+  intro b
+  apply f
+  assumption

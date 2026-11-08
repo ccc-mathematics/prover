@@ -28,6 +28,7 @@ ul{list-style:none;margin:6px 0 0;padding:0;border-left:3px solid var(--line)}
 li{padding:3px 0 3px 12px;font:14px/1.6 "JetBrains Mono",ui-monospace,monospace;word-break:break-word}
 li.ok b{color:var(--acc)}li.error b{color:var(--bad)}li.open b,li.sorry b{color:var(--mut)}
 li small{display:block;color:var(--bad);white-space:pre-wrap}
+li small.ax{color:var(--mut)}
 .bar{display:flex;align-items:center;gap:8px;margin:18px 0 8px}
 .bar span{flex:1;color:var(--mut);font-size:.92rem}
 button{font:inherit;font-size:.92rem;color:var(--ink);background:transparent;border:1px solid var(--line);border-radius:6px;padding:4px 14px;cursor:pointer}
@@ -49,6 +50,7 @@ details pre{margin-top:8px;color:var(--mut);font-size:14px}
 <ul id="res"></ul>
 <div class="bar"><button id="prev" aria-label="上一行">◀</button><button id="next" aria-label="下一行">▶</button><span id="where"></span></div>
 <pre id="goals" aria-live="polite"></pre>
+<details><summary>證明項(certificate)與依賴公理</summary><pre id="cert">點選一個已完成的定理,這裡會顯示被核心檢查過的證明項。</pre></details>
 <details><summary>語法與策略速查</summary><pre>inductive T (A : Type) : Nat -> Type  宣告歸納型別;冒號後可以有索引(歸納族)
   | ctor : 型別                      每行一個建構子
   → 自動生成 T.ind(目標 Prop,歸納法)與 T.rec(目標 Type,定義函數)
@@ -56,6 +58,12 @@ details pre{margin-top:8px;color:var(--mut);font-size:14px}
 def f {A : Type} (x : A) : B := t   定義;{ } 是隱式參數;theorem 與 axiom 同格式
 check t / eval t                     顯示型別 / 化簡
 theorem name … : T := by             後接策略;也可以 := 項(項模式)
+def f … : T :=                       本體可以是 match(一層 pattern、結構遞迴):
+  match x with
+  | Vec.cons a t => Vec.cons (f a) (f t)    遞迴呼叫 f 固定參數 t 會換成 ih
+                                      被索引排除的建構子不必寫;缺少分支會報錯
+def f … : T := by                    用策略寫的資料定義(可展開、可 eval);
+                                      目標在 Type 時 cases/induction/subst 改用 .rec / Eq.rec
 
 intro x y     exact t     refine t(留下 _ 當新目標)
 apply t       assumption  have h : T [:= t]
@@ -66,11 +74,15 @@ cases h with a b        分類討論(cases 不顯示 ih);索引可以是任意�
 subst h / injection h / discriminate h   等式 h 的三種化解(cases 內部也用它們)
 constructor / left / right / exists w / exfalso
 norm(化簡目標)  sorry(會被標記)
+auto            認證式自動化(直覺主義):命題邏輯完整(G4ip)、一階反向鏈結、∃、Eq;auto 10 加大深度
+tauto           古典命題邏輯:對原子命題用 Classical.em 分情況再 auto(會依賴公理 Classical.em)
+(單行寫法:theorem t : T := by auto;搜尋不可信,證明項照常由核心檢查)
 
 項:fun (x : A) =&gt; t、forall (x : A), B、A -&gt; B、f a b、_、(t : T)
     Prop、Type、Type 1…;2 + 3 與 a = b 是記號;數字 5 是 Nat.succ 的簡寫
-標準庫:False True And Or Exists Nat List Eq(歸納族)、Not
-        Eq.refl(建構子)symm trans congr subst、False.elim、Nat.add</pre></details>
+標準庫:False True And Or Exists Nat List Eq(歸納族)、Not、公理 Classical.em
+        Eq.refl(建構子,參數隱式,可寫 (Eq.refl : 2 = 2))、Eq.symm trans congr subst、False.elim、Nat.add
+大消去(.rec)只有語法單元型別有:False True And Eq;Or Exists 沒有</pre></details>
 </main>
 <script>/* μ — 微型 CIC 證明助手(Node 與瀏覽器共用)
    ① 核心:locally nameless 的項、宇宙階層、β δ ι 化簡、定義等價、型別推導
@@ -306,10 +318,12 @@ function doInductive(q) {
       return true;
     });
     const full = `${name}.${c.cn}`; G[full] = { ty: mkPi(ps, T), ctor: { I: name, idx } };
-    return { full, T, nf: fs.length, recs };
+    const ridx = spine(res)[1].slice(np);
+    return { full, T, nf: fs.length, recs, subOk: fs.every(f => sortOf(f.ty) === 0 || ridx.some(j => occF(j, f))) };
   });
   const order = info.map(c => c.full), cmap = {}; info.forEach((c, idx) => { cmap[c.full] = { idx, nf: c.nf, recs: c.recs }; });
-  for (const [rn, target] of [[name + '.ind', 0], ...(sl > 0 ? [[name + '.rec', 1]] : [])]) { // I.ind 目標 Prop(歸納法),I.rec 目標 Type(定義函數)
+  const subsingleton = sl === 0 && (info.length === 0 || (info.length === 1 && info[0].subOk)); // 零個建構子,或一個建構子且欄位都是證明/出現在索引裡 → 允許大消去
+  for (const [rn, target] of [[name + '.ind', 0], ...(sl > 0 || subsingleton ? [[name + '.rec', 1]] : [])]) { // I.ind 目標 Prop(歸納法),I.rec 目標 Type(定義函數)
     const ix1 = peel(idxTy).fs, x1 = FV('x', IPx(ix1)), Cm = FV('motive', mkPi([...ix1, x1], S(target)));
     const capp = (js, x) => A(js.reduce((t, i) => A(t, i), Cm), x);
     const Ms = info.map(c => {
@@ -322,7 +336,7 @@ function doInductive(q) {
     infer(ty); G[rn] = { ty, rec: { np, ni, nc: info.length, arity: np + 1 + info.length + ni + 1, order, ctors: cmap } };
   }
   ps.forEach((x, i) => { x.imp = sp[i]; });
-  return `${name}(${info.map(c => c.full.split('.')[1]).join(' | ')})  ${name}.ind${sl > 0 ? ' ' + name + '.rec' : ''}`;
+  return `${name}(${info.map(c => c.full.split('.')[1]).join(' | ')})  ${name}.ind${sl > 0 || subsingleton ? ' ' + name + '.rec' : ''}`;
 }
 
 /* ── ④ 策略:目標是洞(meta);證明項的 lg 節點代表「這裡要 intro 一個變數」,最後再收尾成 λ ── */
@@ -339,7 +353,19 @@ const showGoals = gs => gs.length ? (gs.length > 1 ? gs.length + ' 個目標\n\n
 
 /* ── 索引合一:subst / injection / discriminate(cases 遇到非變數索引時自動使用) ── */
 const mkGoal = (lc, ty) => { const m = newMeta(ty, lc); m.goal = true; return m; };
-const setG = (St, g, sol, gs = []) => { g.sol = sol; St.goals = [...gs, ...St.goals.slice(1)]; };
+const SOLLOG = [];
+const setG = (St, g, sol, gs = []) => { SOLLOG.push([g, g.sol]); g.sol = sol; St.goals = [...gs, ...St.goals.slice(1)]; };
+const openGoals = (t, lc) => { const ms = metasOf(t), bad = ms.find(m => !m.hole);
+  if (bad) die(`無法推出隱式參數(它的型別是 ${bad.ty ? show(zk(bad.ty)) : '未知'}),請明確寫出`); return ms.map(m => { m.goal = true; m.lc = lc; return m; }); };
+function doApply(St, g, t, ty) { // 依賴型參數(∀)與前提都用洞補上,洞被合一解出就不再是目標
+  const env = g.lc.map(x => ({ n: x.n, fv: x }));
+  for (;;) {
+    [t, ty] = ins(t, ty, env); const n = trail.length; if (defEq(ty, g.ty)) break; undo(n);
+    const T = whnf(ty); if (T.k !== 'p') die(`apply 失敗:${show(zk(ty))} 的結論無法吻合目標 ${show(zk(g.ty))}`);
+    const m = newMeta(T.ty, g.lc); m.hole = true; t = A(t, m); ty = inst(T.b, m);
+  }
+  setG(St, g, t, openGoals(t, g.lc));
+}
 const eqP = ty => { const [h, a] = spine(zk(ty)); return h.k === 'c' && h.n === 'Eq' && a.length === 3 ? a : null; };
 const ctorView = t => { const [h, sp] = spine(whnf(t)), d = h.k === 'c' && G[h.n] && G[h.n].ctor; return d ? { name: h.n, I: d.I, args: sp } : null; };
 const ctorNorm = t => { t = whnf(t); const [h, sp] = spine(t); return h.k === 'c' && G[h.n] && G[h.n].ctor ? sp.reduce((acc, x) => A(acc, ctorNorm(x)), h) : t; }; // 沿建構子結構化簡(n + 1 → succ n)
@@ -359,6 +385,7 @@ function codeFn(I, params, T, body) { // λ x:T. I.rec params (λ_. Prop) (各�
 }
 function substVar(St, g, e, v, o, pe, Aty) { // 把區域變數 v 換成 o(pe : o = v)。依賴 v 的假設先收回目標,代換後再 intro
   const gt = zk(g.ty); if (occF(o, v)) die('subst 失敗:變數出現在等號另一邊(occurs check)');
+  let sg = 0; try { sg = sortOf(gt); } catch (x) { /* 當作 Prop */ } if (sg > 1) die('目標的宇宙層級太高(只支援 Prop 與 Type 的目標)');
   const deps = []; for (const x of g.lc) { if (x === v || x === e) continue; if (occF(x.ty, v) || deps.some(d => occF(x.ty, d))) deps.push(x); }
   if (deps.some(d => occF(o, d))) die('subst 失敗:另一邊的項依賴於會被替換掉的假設');
   const Gd = mkPi(deps, gt), motive = Lam(v.n, zk(v.ty), abs(Lam('e', A(A(A(C('Eq'), Aty), o), v), Gd), v));
@@ -366,7 +393,7 @@ function substVar(St, g, e, v, o, pe, Aty) { // 把區域變數 v 換成 o(pe : 
   for (let i = 0; i < deps.length; i++) { const T = deref(cur), x = FV(T.n, T.ty, T.imp); xs.push(x); cur = inst(T.b, x); }
   const ng = mkGoal([...g.lc.filter(x => x !== v && x !== e && !deps.includes(x)), ...xs], cur);
   const minor = xs.reduceRight((b, x) => ({ k: 'lg', x, body: b }), ng);
-  let pf = A(A(A(A(A(A(C('Eq.ind'), Aty), o), motive), minor), v), pe); deps.forEach(d => { pf = A(pf, d); });
+  let pf = A(A(A(A(A(A(C(sg > 0 ? 'Eq.rec' : 'Eq.ind'), Aty), o), motive), minor), v), pe); deps.forEach(d => { pf = A(pf, d); });
   setG(St, g, pf, [ng]);
 }
 function injectEq(St, g, e) { // c a = c b ⟹ a_j = b_j(只處理型別不依賴前面欄位的欄位)
@@ -393,7 +420,8 @@ function discrEq(St, g, e) { // c a = d b(不同建構子)⟹ False,用編碼函
   const [Aty, l, r] = a, cl = ctorView(l), cr = ctorView(r);
   if (!cl || !cr || cl.I !== cr.I) die('discriminate:等號兩邊都必須是同一個歸納型別的建構子應用'); if (cl.name === cr.name) die('discriminate:兩邊是同一個建構子(請用 injection)');
   const params = cl.args.slice(0, G[cl.I + '.ind'].rec.np), Pd = codeFn(cl.I, params, Aty, cn => C(cn === cl.name ? 'True' : 'False'));
-  setG(St, g, A(A(C('False.elim'), zk(g.ty)), A(A(A(A(A(A(C('Eq.subst'), Aty), l), r), e), Pd), C('True.intro'))));
+  const pfF = A(A(A(A(A(A(C('Eq.subst'), Aty), l), r), e), Pd), C('True.intro')); let sg = 0; try { sg = sortOf(g.ty); } catch (x) { /* 當作 Prop */ }
+  setG(St, g, sg > 0 ? A(A(C('False.rec'), Lam('_', C('False'), zk(g.ty))), pfF) : A(A(C('False.elim'), zk(g.ty)), pfF));
 }
 function elimEq(St, e0) { // 化解一個等式假設:相同 → 略過;變數 → subst;同建構子 → injection 再遞迴;不同建構子 → discriminate
   const g = St.goals[0], e = g && lastBy(g.lc, e0.n), a = e && eqP(e.ty); if (!a) return;
@@ -405,14 +433,131 @@ function elimEq(St, e0) { // 化解一個等式假設:相同 → 略過;變數 �
   if (cl && cr) { if (cl.name === cr.name) injectEq(St, g, e).forEach(n => elimEq(St, { n })); else discrEq(St, g, e); }
 }
 
+/* ── match:編譯成 cases(非遞迴)或 induction(結構遞迴),再逐分支 exact ── */
+function parseMatch(text, x, fname, bs) {
+  const explicit = bs.filter(b => !b.imp).map(b => b.n), branches = [];
+  for (const part of text.split(/\n\s*\|/).map(p => p.replace(/^\s*\|/, '')).filter(p => p.trim())) {
+    const m = part.match(/^\s*([\w.']+)((?:\s+[\w']+)*)\s*=>\s*([\s\S]*)$/); if (!m) die('match 分支格式:| 建構子 變數… => 項');
+    branches.push({ ctor: m[1], vars: m[2].trim() ? m[2].trim().split(/\s+/) : [], rhs: m[3].trim() });
+  }
+  if (!branches.length) die('match 至少需要一個分支');
+  const esc = fname.replace(/\./g, '\\.'), rec = branches.some(b => new RegExp('(^|[^\\w.])' + esc + "(?![\\w.'])").test(b.rhs));
+  if (rec && explicit[explicit.length - 1] !== x) die('遞迴定義要求 match 的對象是最後一個明確參數');
+  return { x, branches, rec, fname, explicit };
+}
+function rewriteRec(ast, sp, ihMap) { // f 固定參數… 遞迴欄位  ⟹  該欄位的 ih
+  const E = sp.explicit.length, fixed = sp.explicit.slice(0, -1);
+  const bad = () => die(`遞迴呼叫必須寫成 ${[sp.fname, ...fixed, '(遞迴欄位)'].join(' ')}(目前只支援結構遞迴)`);
+  const go = t => {
+    switch (t.k) {
+      case 'app': {
+        const args = []; let h = t; while (h.k === 'app') { args.unshift(h.a); h = h.f; }
+        if (h.k === 'var' && h.n === sp.fname) {
+          const last = args[E - 1];
+          if (args.length === E && fixed.every((n, i) => args[i].k === 'var' && args[i].n === n) && last.k === 'var' && ihMap[last.n]) return { k: 'var', n: ihMap[last.n] };
+          bad();
+        }
+        return args.reduce((f, x) => ({ k: 'app', f, a: go(x) }), go(h));
+      }
+      case 'var': if (t.n === sp.fname) bad(); return t;
+      case 'lam': case 'pi': return { ...t, ty: t.ty && go(t.ty), b: go(t.b) };
+      case 'ann': return { ...t, e: go(t.e), ty: go(t.ty) };
+      default: return t;
+    }
+  };
+  return go(ast);
+}
+
+/* ── 認證式自動化(不可信的搜尋):搜尋只決定「用哪些策略」,產生的證明項照常交給核心檢查 ──
+   auto:直覺主義命題邏輯的完整證明搜尋(Dyckhoff 的 G4ip,可逆規則直接套用、不可逆規則才回溯)+ 一階的反向鏈結(合一)、∃ 見證搜尋、Eq。
+   tauto:古典命題邏輯的判定程序——對原子命題用 Classical.em 分情況,葉節點交給 auto。 */
+const save = St => ({ n: SOLLOG.length, t: trail.length, goals: St.goals });
+const restore = (St, sv) => { while (SOLLOG.length > sv.n) { const [m, o] = SOLLOG.pop(); m.sol = o; } undo(sv.t); St.goals = sv.goals; };
+const hv = () => 'h#' + (++hid);
+function shape(t0) { // 把命題分類成 imp / all / and / or / ex / false / true / atom
+  const t = hbs(zk(t0)), [h, sp] = spine(t), nm = h.k === 'c' ? h.n : '';
+  if (h.k === 'p') return usesB(h.b) ? { k: 'all' } : { k: 'imp', a: h.ty, b: inst(h.b, h.ty) };
+  if (nm === 'Not' && sp.length === 1) return { k: 'imp', a: sp[0], b: C('False') };
+  if ((nm === 'And' || nm === 'Or') && sp.length === 2) return { k: nm === 'And' ? 'and' : 'or', a: sp[0], b: sp[1] };
+  if (nm === 'Exists' && sp.length === 2) return { k: 'ex' };
+  if (nm === 'False' && !sp.length) return { k: 'false' };
+  if (nm === 'True' && !sp.length) return { k: 'true' };
+  return { k: 'atom' };
+}
+function replaceHyp(St, old, news) { // 用推出來的新假設取代舊假設(新假設名稱隱藏);回傳新假設
+  const g = St.goals[0], xs = news.map(n => FV(hv(), n.T)), ng = mkGoal([...g.lc.filter(y => y !== old), ...xs], g.ty);
+  setG(St, g, xs.reduceRight((acc, x, i) => A({ k: 'lg', x, body: acc }, news[i].pf), ng), [ng]); return xs;
+}
+function invGoal(St) { // 目標端的可逆規則
+  const s = shape(St.goals[0].ty);
+  if (s.k === 'imp' || s.k === 'all') { tactic(St, 'intro', hv()); return true; }
+  if (s.k === 'and' || s.k === 'true') { tactic(St, 'constructor', ''); return true; }
+  return false;
+}
+function invHyp(St) { // 假設端的可逆規則
+  const g = St.goals[0];
+  for (const x of [...g.lc].reverse()) {
+    const s = shape(x.ty), cs = names => tactic(St, 'cases', `${x.n} with ${names.join(' ')}`);
+    if (s.k === 'false') { cs([]); return true; }
+    if (s.k === 'and' || s.k === 'or' || s.k === 'ex') { cs([hv(), hv()]); return true; }
+    if (s.k === 'true') { replaceHyp(St, x, []); return true; }
+    if (s.k !== 'imp') continue;
+    const sa = shape(s.a), B = s.b;
+    if (sa.k === 'false') { replaceHyp(St, x, []); return true; }
+    if (sa.k === 'true') { replaceHyp(St, x, [{ T: B, pf: A(x, C('True.intro')) }]); return true; }
+    if (sa.k === 'and' || sa.k === 'or') { // (P∧Q)→B ⟹ P→Q→B;(P∨Q)→B ⟹ P→B 與 Q→B
+      const [P, Q] = spine(hbs(zk(s.a)))[1], a = FV('a', P), b = FV('b', Q);
+      if (sa.k === 'and') replaceHyp(St, x, [{ T: mkPi([a, b], B), pf: mkLam([a, b], A(x, A(A(A(A(C('And.intro'), P), Q), a), b))) }]);
+      else replaceHyp(St, x, [{ T: mkPi([a], B), pf: mkLam([a], A(x, A(A(A(C('Or.inl'), P), Q), a))) }, { T: mkPi([b], B), pf: mkLam([b], A(x, A(A(A(C('Or.inr'), P), Q), b))) }]);
+      return true;
+    }
+    const q = g.lc.find(y => y !== x && eqT(zk(y.ty), zk(s.a))); // 前提已經在假設裡:modus ponens
+    if (q) { replaceHyp(St, x, [{ T: B, pf: A(x, q) }]); return true; }
+  }
+  return false;
+}
+function special(St, g, x, sx) { // G4ip 的 (C→D)→B 規則:先在 C 與 D→B 之下證明 D,再用 B 繼續
+  const sa = shape(sx.a), Cc = sa.a, D = sa.b, B = sx.b, rest = g.lc.filter(y => y !== x);
+  const c = FV(hv(), Cc), hDB = FV(hv(), Pi('_', D, B)), b = FV(hv(), B), d = FV('d', D);
+  const g1 = mkGoal([...rest, c, hDB], D), g2 = mkGoal([...rest, b], zk(g.ty)), lamD = mkLam([d], A(x, mkLam([FV('_', Cc)], d)));
+  setG(St, g, A({ k: 'lg', x: b, body: g2 }, A(x, { k: 'lg', x: c, body: A({ k: 'lg', x: hDB, body: g1 }, lamD) })), [g1, g2]);
+}
+const rankG = q => { try { return sortOf(q.ty) === 0 ? 0 : 1; } catch (x) { return 0; } }; // 證明目標先於資料目標(見證可由合一得到)
+function solveAll(St, d) { const gs = [...St.goals].sort((p, q) => rankG(p) - rankG(q)); St.goals = []; return gs.every(q => q.sol || prove(q, d)); }
+function attempt(St, d, fn) { const sv = save(St); try { fn(); if (solveAll(St, d)) return true; } catch (e) { if (!(e instanceof MuError)) throw e; } restore(St, sv); return false; }
+function prove(g, d) { return g.sol ? true : step({ goals: [g] }, d); }
+function step(St, d) {
+  for (;;) {
+    if (!St.goals.length) return true;
+    if (St.goals.length > 1) return solveAll(St, d);
+    const g = St.goals[0]; if (g.sol) return true; g.ty = hbs(zk(g.ty));
+    if (invGoal(St) || invHyp(St)) continue;
+    return branches(St, d);
+  }
+}
+function branches(St, d) { // 不可逆的選擇:每次選擇都要回溯,深度減一
+  if (d <= 0) return false;
+  const g = St.goals[0], s = shape(g.ty), at = fn => attempt(St, d - 1, fn), rev = [...g.lc].reverse();
+  for (const x of rev) if (at(() => { if (!defEq(x.ty, g.ty)) die('不吻合'); setG(St, g, x); })) return true;
+  if (s.k === 'or') for (const side of ['left', 'right']) if (at(() => tactic(St, side, ''))) return true;
+  if (s.k === 'ex' && at(() => tactic(St, 'refine', 'Exists.intro _ _'))) return true;
+  if (at(() => tactic(St, 'rfl', ''))) return true;
+  for (const x of rev) {
+    const sx = shape(x.ty);
+    if ((sx.k === 'imp' || sx.k === 'all') && at(() => doApply(St, g, x, x.ty))) return true;
+    if (sx.k === 'imp' && shape(sx.a).k === 'imp' && at(() => special(St, g, x, sx))) return true;
+  }
+  return at(() => tactic(St, 'symm', ''));
+}
+const dedupe = lc => { for (let i = 0; i < lc.length; i++) while (lc.slice(i + 1).some(y => y.n === lc[i].n)) lc[i].n += "'"; };
+
 function tactic(St, name, arg) {
   const g = St.goals[0]; if (!g) die('已經沒有目標了');
   const ws = arg.trim() ? arg.trim().split(/\s+/) : [], env = g.lc.map(x => ({ n: x.n, fv: x })), gty = () => zk(g.ty);
   const mkG = (lc, ty) => { const m = newMeta(ty, lc); m.goal = true; return m; };
-  const set = (sol, gs = []) => { g.sol = sol; St.goals = [...gs, ...St.goals.slice(1)]; };
+  const set = (sol, gs = []) => setG(St, g, sol, gs);
   const el = (src, exp) => { const q = P(src), t = q.term(); if (!q.done()) throw q.err('語法錯誤:多餘的符號'); return elab(t, env, exp); };
-  const open = t => { const ms = metasOf(t), bad = ms.find(m => !m.hole);
-    if (bad) die(`無法推出隱式參數(它的型別是 ${bad.ty ? show(zk(bad.ty)) : '未知'}),請明確寫出`); return ms.map(m => { m.goal = true; m.lc = g.lc; return m; }); };
+  const open = t => openGoals(t, g.lc);
   const eqParts = ty => { const [h, a] = spine(zk(ty)); return h.k === 'c' && h.n === 'Eq' && a.length === 3 ? a : null; };
   switch (name) {
     case 'intro': {
@@ -423,15 +568,7 @@ function tactic(St, name, arg) {
     }
     case 'exact': { const [t] = el(arg, g.ty); if (open(t).length) die('exact 裡不能留下 _(要留下目標請用 refine)'); return set(t); }
     case 'refine': { const [t] = el(arg, g.ty); return set(t, open(t)); }
-    case 'apply': {
-      let [t, ty] = el(arg);
-      for (;;) {
-        [t, ty] = ins(t, ty, env); const n = trail.length; if (defEq(ty, g.ty)) break; undo(n);
-        const T = whnf(ty); if (T.k !== 'p') die(`apply 失敗:${show(zk(ty))} 的結論無法吻合目標 ${show(gty())}`);
-        const m = newMeta(T.ty, g.lc); m.hole = true; t = A(t, m); ty = inst(T.b, m);
-      }
-      return set(t, open(t));
-    }
+    case 'apply': { const [t0, ty0] = el(arg); return doApply(St, g, t0, ty0); }
     case 'assumption': { for (let i = g.lc.length; i--; ) { const n = trail.length; if (defEq(g.lc[i].ty, g.ty)) return set(g.lc[i]); undo(n); } die('找不到符合目標的假設'); }
     case 'have': {
       const i = arg.indexOf(':='), lhs = i < 0 ? arg : arg.slice(0, i), j = lhs.indexOf(':'); if (j < 0) die('格式:have 名稱 : 命題 [:= 項]');
@@ -455,6 +592,50 @@ function tactic(St, name, arg) {
       const ng = mkG(g.lc, inst(body, r)), mot = Lam('z', a[0], body), esub = (x, y, hh) => A(A(A(A(A(C('Eq.subst'), a[0]), x), y), hh), mot); // Eq.subst x y h P : P x → P y
       return set(A(rev ? esub(a[1], a[2], t) : esub(a[2], a[1], A(A(A(A(C('Eq.symm'), a[0]), a[1]), a[2]), t)), ng), [ng]);
     }
+    case 'auto': {
+      const d = +ws[0] || 6, sv = save(St); dedupe(g.lc);
+      if (!prove(g, d)) { restore(St, sv); die(`auto 找不到證明(搜尋深度 ${d})。可以拆解目標、先 have 需要的引理,或加大深度:auto ${d + 4}`); }
+      St.goals = St.goals.slice(1); return;
+    }
+    case 'tauto': { // 古典命題邏輯:對每個原子命題 p 用 Classical.em 分成 p / ¬p 兩種情況,葉節點交給 auto
+      if (!G['Classical.em']) die('tauto 需要公理 Classical.em'); const d = +ws[0] || 6, sv = save(St); dedupe(g.lc);
+      const atoms = [], scan = t => { const sh = shape(t); if (sh.k === 'imp' || sh.k === 'and' || sh.k === 'or') { scan(sh.a); scan(sh.b); } else if (sh.k !== 'false' && sh.k !== 'true') { const z = zk(t); if (!atoms.some(a => eqT(a, z))) atoms.push(z); } };
+      try { if (sortOf(g.ty) !== 0) die('tauto 的目標必須是命題'); scan(g.ty); g.lc.forEach(x => { try { if (sortOf(x.ty) === 0) scan(x.ty); } catch (e) { /* 不是命題 */ } }); } catch (e) { if (!(e instanceof MuError)) throw e; die('tauto 的目標必須是命題'); }
+      if (atoms.length > 7) die(`原子命題太多(${atoms.length} > 7)`);
+      const rec = (q, i) => {
+        if (i === atoms.length) return prove(q, d);
+        const S2 = { goals: [q] }, p = atoms[i], [e] = replaceHyp(S2, null, [{ T: A(A(C('Or'), p), A(C('Not'), p)), pf: A(C('Classical.em'), p) }]);
+        tactic(S2, 'cases', `${e.n} with ${hv()} ${hv()}`); return S2.goals.every(q2 => rec(q2, i + 1));
+      };
+      if (!rec(g, 0)) { restore(St, sv); die('tauto 找不到證明:這個命題不是古典命題邏輯的重言式(或需要一階推理)'); }
+      St.goals = St.goals.slice(1); return;
+    }
+    case 'match': {
+      const sp = St.spec, h = lastBy(g.lc, sp.x); if (!h) die(`找不到變數 ${sp.x}`);
+      let hty = zk(h.ty), [I] = spine(hty); if (I.k !== 'c') { hty = whnf(hty); [I] = spine(hty); }
+      const rd = I.k === 'c' && G[I.n + '.ind']; if (!rd) die(`${sp.x} 的型別不是歸納型別`);
+      const r = rd.rec, byCtor = {}, ihOf = {}, names = [];
+      for (const b of sp.branches) { const full = r.order.find(cn => cn === b.ctor || cn === I.n + '.' + b.ctor); if (!full) die(`${b.ctor} 不是 ${I.n} 的建構子`); if (byCtor[full]) die(`建構子 ${full} 的分支重複了`); byCtor[full] = b; }
+      for (const cn of r.order) { // 依建構子順序決定欄位名稱:隱式欄位用隱藏名稱,明確欄位用 pattern 的變數
+        const c = r.ctors[cn], b = byCtor[cn], fn = []; let T = G[cn].ty, k = 0; ihOf[cn] = {};
+        for (let i = 0; i < r.np; i++) T = deref(T).b;
+        for (let i = 0; i < c.nf; i++) { T = deref(T); if (T.imp) fn.push(`${T.n}#`); else { const v = b ? b.vars[k++] : undefined; fn.push(v && v !== '_' ? v : 'a#'); } T = T.b; }
+        if (b && k !== b.vars.length) die(`建構子 ${cn} 有 ${k} 個明確欄位,但分支寫了 ${b.vars.length} 個變數`);
+        names.push(...fn); if (sp.rec) c.recs.forEach((rc, i) => { if (rc) { names.push(`ih_${fn[i]}`); ihOf[cn][fn[i]] = `ih_${fn[i]}`; } });
+      }
+      tactic(St, sp.rec ? 'induction' : 'cases', `${sp.x} with ${names.join(' ')}`);
+      const mine = St.goals.filter(q => q.ctor), seen = new Set(mine.map(q => q.ctor));
+      for (const cn of Object.keys(byCtor)) if (!seen.has(cn)) die(`分支 ${cn} 不可能發生(它的索引與目標不吻合,已被排除)`);
+      for (const q of mine) {
+        const b = byCtor[q.ctor]; if (!b) die(`缺少分支:${q.ctor}`);
+        const qq = P(b.rhs); let ast = qq.term(); if (!qq.done()) throw qq.err('語法錯誤:多餘的符號');
+        if (sp.rec) ast = rewriteRec(ast, sp, ihOf[q.ctor]);
+        const [t] = elab(ast, q.lc.map(x => ({ n: x.n, fv: x })), q.ty);
+        if (metasOf(zk(t)).length) die(`分支 ${q.ctor} 裡不能留下 _`);
+        q.sol = t;
+      }
+      St.goals = St.goals.filter(q => !q.ctor); return;
+    }
     case 'subst': {
       const e = lastBy(g.lc, ws[0]); if (!e) die(`找不到假設 ${ws[0]}`); const a = eqParts(e.ty); if (!a) die('subst 需要 x = y 型的假設');
       const [Aty, l, r] = a, rv = deref(r), lv = deref(l);
@@ -467,7 +648,9 @@ function tactic(St, name, arg) {
     case 'induction': case 'cases': { // 通用:用 I.ind 對區域假設做歸納 / 分類討論。cases 的索引可以是任意項(自動做索引合一);依賴被分析對象的假設會自動收回再 intro
       const w = ws.filter(x => x !== 'with'), hn = w.shift(), h = lastBy(g.lc, hn); if (!h) die(`找不到假設 ${hn}`);
       let hty = zk(h.ty), [I, ps] = spine(hty); if (I.k !== 'c') { hty = whnf(hty); [I, ps] = spine(hty); }
-      const rd = I.k === 'c' && G[I.n + '.ind']; if (!rd) die(`${hn} 的型別 ${show(h.ty)} 不是歸納型別`);
+      let sg = 0; try { sg = sortOf(gty()); } catch (x) { /* 當作 Prop */ } if (sg > 1) die('cases / induction 目前只支援目標在 Prop 或 Type 的情況');
+      const rd = I.k === 'c' && G[I.n + (sg > 0 ? '.rec' : '.ind')];
+      if (!rd) die(I.k === 'c' && G[I.n + '.ind'] ? `${I.n} 是 Prop 的歸納型別,不能對 Type 的目標做分類討論(沒有大消去)` : `${hn} 的型別 ${show(h.ty)} 不是歸納型別`);
       const r = rd.rec, params = ps.slice(0, r.np), idxArgs = ps.slice(r.np).map(deref);
       const isVar = idxArgs.map((x, i) => x.k === 'f' && g.lc.includes(x) && idxArgs.findIndex(y => y === x) === i && !params.some(p => occF(p, x)));
       if (name === 'induction' && !isVar.every(Boolean)) die('induction 目前只支援索引是變數的情況(cases 支援任意索引)');
@@ -494,9 +677,9 @@ function tactic(St, name, arg) {
           const x = FV(nm, cur.ty); xs.push(x); cur = inst(cur.b, x);
         }
         const gM = mkG([...lcBase, ...xs], hbs(cur)), mp = xs.reduceRight((b, x) => ({ k: 'lg', x, body: b }), gM); minors.push(mp); T = inst(Td.b, mp);
-        gs.push(...(Es.length || deps.length ? solveMinor(gM) : [gM]));
+        const outs = Es.length || deps.length ? solveMinor(gM) : [gM]; outs.forEach(q => { q.ctor = cn; }); gs.push(...outs);
       }
-      let pf = params.reduce(A, C(I.n + '.ind')); pf = A(pf, motive); minors.forEach(m => { pf = A(pf, m); }); idxArgs.forEach(i => { pf = A(pf, i); }); pf = A(pf, h);
+      let pf = params.reduce(A, C(I.n + (sg > 0 ? '.rec' : '.ind'))); pf = A(pf, motive); minors.forEach(m => { pf = A(pf, m); }); idxArgs.forEach(i => { pf = A(pf, i); }); pf = A(pf, h);
       idxArgs.forEach((x, i) => { if (!isVar[i]) pf = A(pf, A(A(C('Eq.refl'), ixs[i].ty), x)); }); deps.forEach(d => { pf = A(pf, d); });
       return set(pf, gs);
     }
@@ -532,18 +715,19 @@ inductive List (A : Type) : Type
   | nil : List A
   | cons : A -> List A -> List A
 def Not (A : Prop) : Prop := A -> False
+axiom Classical.em (P : Prop) : Or P (Not P)
 inductive Eq {A : Type} (a : A) : A -> Prop
   | refl : Eq a a
-theorem Eq.symm {A : Type} {x y : A} (h : x = y) : y = x := by
+def Eq.symm {A : Type} {x y : A} (h : x = y) : y = x := by
   cases h
   rfl
-theorem Eq.trans {A : Type} {x y z : A} (h1 : x = y) (h2 : y = z) : x = z := by
+def Eq.trans {A : Type} {x y z : A} (h1 : x = y) (h2 : y = z) : x = z := by
   cases h2
   exact h1
-theorem Eq.congr {A B : Type} (f : A -> B) {x y : A} (h : x = y) : f x = f y := by
+def Eq.congr {A B : Type} (f : A -> B) {x y : A} (h : x = y) : f x = f y := by
   cases h
   rfl
-theorem Eq.subst {A : Type} {a b : A} (h : a = b) (P : A -> Prop) (pa : P a) : P b := by
+def Eq.subst {A : Type} {a b : A} (h : a = b) (P : A -> Prop) (pa : P a) : P b := by
   cases h
   exact pa
 theorem False.elim {C : Prop} (h : False) : C := by
@@ -551,6 +735,12 @@ theorem False.elim {C : Prop} (h : False) : C := by
 def Nat.add (m n : Nat) : Nat := Nat.rec (fun (_ : Nat) => Nat) m (fun (k : Nat) (r : Nat) => Nat.succ r) n
 `;
 
+const constsOf = (t, acc = new Set()) => { t = deref(t); if (t.k === 'c') acc.add(t.n); else if (t.k === 'a') { constsOf(t.f, acc); constsOf(t.a, acc); } else if (t.k === 'l' || t.k === 'p') { constsOf(t.ty, acc); constsOf(t.b, acc); } return acc; };
+function recordAx(name, t, cmd, sorry) { // 這個定義/定理依賴哪些公理(含它用到的定理所依賴的公理)
+  const out = new Set(sorry ? ['sorry'] : []);
+  for (const c of constsOf(t)) { const d = G[c]; if (!d) continue; if (d.axiom) out.add(c); (d.axioms || []).forEach(a => out.add(a)); }
+  G[name].axioms = [...out]; cmd.axioms = [...out]; cmd.cert = show(t).slice(0, 4000); // 證明項就是 certificate:任何人都能拿去重新檢查
+}
 function exec(text, R) {
   const L = text.split('\n').map(l => l.replace(/--.*$/, '')); R.lines = L;
   const starts = []; L.forEach((l, i) => /^(def|theorem|axiom|inductive|check|eval)\b/.test(l) && starts.push(i));
@@ -563,51 +753,62 @@ function exec(text, R) {
       else if (kind === 'check' || kind === 'eval') {
         const q = P(body), ast = q.term(); if (!q.done()) throw q.err('語法錯誤:多餘的符號');
         const [t0] = ast.k === 'var' && G[ast.n] ? [C(ast.n)] : elab(ast, []), t = zk(t0); noHoles(t); const ty = infer(t); cmd.text = `${show(kind === 'eval' ? nf(t) : t)} : ${show(ty)}`;
-      } else if (kind === 'theorem') theorem(L, s, e, cmd, R);
+      } else if (kind === 'theorem' || (kind === 'def' && (L.slice(s, e).some(l => /:=\s*by(\s|$)/.test(l)) || /:=\s*match\s+[\w']+\s+with\b/.test(L.slice(s, e).join('\n'))))) theorem(L, s, e, cmd, R, kind === 'def');
       else { // def / axiom
         const q = P(body), name = q.ident(), bs = q.binders(); q.expect(':'); const tyAst = q.term(), ty = closedType(q.wrap('pi', bs, tyAst));
-        if (kind === 'def') { q.expect(':='); const val = elabClosed(q.wrap('lam', bs, q.term()), ty); if (!q.done()) throw q.err('語法錯誤:多餘的符號'); G[name] = { ty, val }; }
-        else { if (!q.done()) throw q.err('語法錯誤:多餘的符號'); G[name] = { ty }; }
+        if (kind === 'def') { q.expect(':='); FL.sorry = false; const val = elabClosed(q.wrap('lam', bs, q.term()), ty); if (!q.done()) throw q.err('語法錯誤:多餘的符號'); G[name] = { ty, val }; recordAx(name, val, cmd, FL.sorry); }
+        else { if (!q.done()) throw q.err('語法錯誤:多餘的符號'); G[name] = { ty, axiom: true }; }
         cmd.text = `${name} : ${show(ty)}`;
       }
-      if (kind !== 'theorem') for (let i = s; i < e; i++) R.info[i] = cmd.text;
+      if (!cmd.tac) for (let i = s; i < e; i++) R.info[i] = cmd.text;
     } catch (x) { cmd.status = 'error'; cmd.msg = x.message; R.errors[s] = x.message; }
   });
 }
-function theorem(L, s, e, cmd, R) {
-  let h = s; while (h < e && !/:=\s*by\s*$/.test(L[h])) h++;
-  const tac = h < e, q = P(L.slice(s, tac ? h + 1 : e).join(' ').trim().slice(7)), name = q.ident(), bs = q.binders(); q.expect(':');
+function theorem(L, s, e, cmd, R, isDef) {
+  const joined = L.slice(s, e).join('\n'), mt = joined.match(/:=\s*match\s+([\w']+)\s+with\b/);
+  let h = s; while (h < e && !/:=\s*by(\s|$)/.test(L[h])) h++;
+  const hEnd = mt ? s + joined.slice(0, mt.index).split('\n').length - 1 : h;
+  cmd.tac = true; const tac = !mt && h < e, q = P((mt ? joined.slice(0, mt.index) + ':=' : L.slice(s, tac ? h + 1 : e).join(' ')).trim().slice(isDef ? 3 : 7)), name = q.ident(), bs = q.binders(); q.expect(':');
   const tyAst = q.term(); q.expect(':='); const decl = closedType(q.wrap('pi', bs, tyAst)); cmd.text = `${name} : ${show(decl)}`;
-  if (!tac) { FL.sorry = false; elabClosed(q.wrap('lam', bs, q.term()), decl); if (!q.done()) throw q.err('語法錯誤:多餘的符號'); G[name] = { ty: decl }; if (FL.sorry) cmd.status = 'sorry'; return; }
+  if (!tac && !mt) { FL.sorry = false; const tv = elabClosed(q.wrap('lam', bs, q.term()), decl); if (!q.done()) throw q.err('語法錯誤:多餘的符號'); G[name] = { ty: decl }; if (FL.sorry) cmd.status = 'sorry'; recordAx(name, tv, cmd, FL.sorry); return; }
   let ty = decl; const fvs = [];
   for (let i = 0; i < bs.length; i++) { const T = deref(ty), x = FV(T.n, T.ty, T.imp); fvs.push(x); ty = inst(T.b, x); }
   const root = newMeta(ty, fvs); root.goal = true; const St = { goals: [root] }; let failed = false;
-  for (let i = s; i <= h; i++) R.states[i] = showGoals(St.goals);
-  for (let i = h + 1; i < e; i++) {
-    const t = L[i].trim().replace(/^[·•*-]\s+/, '');
+  for (let i = s; i <= hEnd; i++) R.states[i] = showGoals(St.goals);
+  const inline = tac && (L[h].match(/:=\s*by\s+(\S.*)$/) || [])[1]; // 單行寫法:theorem … := by auto
+  for (let i = inline ? h : h + 1; i < e; i++) {
+    const t = (i === h ? inline : L[i]).trim().replace(/^[·•*-]\s+/, '');
     if (t && !failed) try { const m = t.match(/^(\w+)\s*(.*)$/); if (!m) die('看不懂這一行'); tactic(St, m[1], m[2]); }
       catch (x) { failed = true; cmd.status = 'error'; cmd.msg = `第 ${i + 1} 行:${x.message}`; cmd.errLine = i; R.errors[i] = x.message; }
     R.states[i] = showGoals(St.goals);
+  }
+  if (mt) {
+    try { St.spec = parseMatch(joined.slice(mt.index + mt[0].length), mt[1], name, bs); tactic(St, 'match', ''); }
+    catch (x) { failed = true; const ml = L.findIndex((l, i) => i >= s && /\bmatch\b/.test(l)); cmd.status = 'error'; cmd.msg = `match:${x.message}`; cmd.errLine = ml; R.errors[ml] = x.message; }
+    for (let i = hEnd + 1; i < e; i++) R.states[i] = showGoals(St.goals);
   }
   G[name] = { ty: decl };
   if (failed) return;
   if (St.goals.length) { cmd.status = 'open'; cmd.msg = `還有 ${St.goals.length} 個目標未完成`; return; }
   FL.sorry = false; const pf = mkLam(fvs, fin(root)); noHoles(pf);
   if (!defEq(infer(pf), decl)) die('核心推出的型別與宣告不符'); // 策略不可信,最後一律由核心重新檢查
-  if (FL.sorry) cmd.status = 'sorry';
+  if (FL.sorry) cmd.status = 'sorry'; else if (isDef) G[name] = { ty: decl, val: pf }; // def 用策略寫:證明項成為可展開的定義
+  recordAx(name, pf, cmd, FL.sorry);
 }
 function runScript(text) {
-  G = {}; MS = []; trail = []; hid = 0; FL.sorry = false;
+  G = {}; MS = []; trail = []; hid = 0; FL.sorry = false; SOLLOG.length = 0;
   const pre = { cmds: [], states: {}, info: {}, errors: {}, lines: [] }; exec(PRELUDE, pre);
   const bad = pre.cmds.find(c => c.status !== 'ok'); if (bad) die('內部錯誤:prelude 載入失敗:' + bad.msg);
   const R = { cmds: [], states: {}, info: {}, errors: {}, lines: [] }; exec(text, R); R.ok = R.cmds.every(c => c.status === 'ok'); R.size = Object.keys(G).length; return R;
 }
 const ICON = { ok: '✔', sorry: '⚠', open: '…', error: '✘' };
-function report(R, trace) {
+function report(R, trace, cert) {
   const ind = (s, k) => s.split('\n').map(x => ' '.repeat(k) + x), o = [];
   for (const c of R.cmds) {
     o.push(`${ICON[c.status]} ${c.kind} ${c.text}`.trimEnd());
     if (trace && c.kind === 'theorem') for (let i = c.line + 1; i < c.end; i++) if (R.lines[i].trim() && R.states[i] !== undefined && !(i in R.errors)) o.push('    ' + R.lines[i].trim(), ...ind(R.states[i], 8));
+    if (c.axioms && c.axioms.length) o.push(`    依賴公理:${c.axioms.join(', ')}`);
+    if (cert && c.cert && c.status !== 'error') o.push('    證明項:' + c.cert);
     if (c.msg) o.push(...ind(c.msg, 4));
     if (c.errLine !== null) o.push(...ind(R.states[c.errLine], 6));
     if (c.status === 'open') o.push(...ind(R.states[c.end - 1], 6));
@@ -628,6 +829,12 @@ const examples = [
   { name: '索引合一:Fin 0 是空的', src: 'inductive Fin : Nat -> Type\n  | zero : forall {n : Nat}, Fin (n + 1)\n  | succ : forall {n : Nat}, Fin n -> Fin (n + 1)\ntheorem Fin.zero_elim {C : Prop} (i : Fin 0) : C := by\n  cases i' },
   { name: '索引合一:非空 Vec 的 cases', src: 'inductive Vec (A : Type) : Nat -> Type\n  | nil : Vec A 0\n  | cons : forall {n : Nat}, A -> Vec A n -> Vec A (n + 1)\ndef Vec.toList {A : Type} {n : Nat} (v : Vec A n) : List A :=\n  Vec.rec (fun (m : Nat) (_ : Vec A m) => List A) List.nil (fun (m : Nat) (a : A) (t : Vec A m) (r : List A) => List.cons a r) n v\ntheorem toList_ne_nil {A : Type} {n : Nat} (v : Vec A (n + 1)) (h : Vec.toList v = List.nil) : False := by\n  cases v with m a t\n  discriminate h' },
   { name: 'subst / injection', src: 'theorem succ_inj {m n : Nat} (h : Nat.succ m = Nat.succ n) : m = n := by\n  injection h\n  exact h_1\ntheorem subst_demo {A : Type} {a b : A} (h : a = b) (P : A -> Prop) (pa : P a) : P b := by\n  subst h\n  exact pa' },
+  { name: '用策略寫資料定義:Vec.head / map', src: 'inductive Vec (A : Type) : Nat -> Type\n  | nil : Vec A 0\n  | cons : forall {n : Nat}, A -> Vec A n -> Vec A (n + 1)\ndef Vec.toList {A : Type} {n : Nat} (v : Vec A n) : List A :=\n  Vec.rec (fun (m : Nat) (_ : Vec A m) => List A) List.nil (fun (m : Nat) (a : A) (t : Vec A m) (r : List A) => List.cons a r) n v\ndef Vec.head {A : Type} {n : Nat} (v : Vec A (n + 1)) : A := by\n  cases v with m a t\n  exact a\ndef Vec.tail {A : Type} {n : Nat} (v : Vec A (n + 1)) : Vec A n := by\n  cases v with m a t\n  exact t\ndef Vec.map {A B : Type} (f : A -> B) {n : Nat} (v : Vec A n) : Vec B n := by\n  induction v with m a t ih\n  exact Vec.nil\n  exact Vec.cons (f a) ih\ndef Vec.cast {A : Type} {m n : Nat} (h : m = n) (v : Vec A m) : Vec A n := by\n  subst h\n  exact v\neval Vec.head (Vec.cons 7 (Vec.cons 8 Vec.nil))\neval Vec.toList (Vec.tail (Vec.cons 7 (Vec.cons 8 Vec.nil)))\neval Vec.toList (Vec.map Nat.succ (Vec.cons 1 (Vec.cons 2 Vec.nil)))\neval Vec.toList (Vec.cast (Eq.refl : 2 = 2) (Vec.cons 1 (Vec.cons 2 Vec.nil)))\ncheck Eq.rec' },
+  { name: 'match 模式匹配(含結構遞迴)', src: 'inductive Vec (A : Type) : Nat -> Type\n  | nil : Vec A 0\n  | cons : forall {n : Nat}, A -> Vec A n -> Vec A (n + 1)\ndef Vec.toList {A : Type} {n : Nat} (v : Vec A n) : List A :=\n  match v with\n  | Vec.nil => List.nil\n  | Vec.cons a t => List.cons a (Vec.toList t)\ndef Vec.head {A : Type} {n : Nat} (v : Vec A (n + 1)) : A :=\n  match v with\n  | Vec.cons a t => a\ndef Vec.map {A B : Type} (f : A -> B) {n : Nat} (v : Vec A n) : Vec B n :=\n  match v with\n  | Vec.nil => Vec.nil\n  | Vec.cons a t => Vec.cons (f a) (Vec.map f t)\ndef Nat.double (n : Nat) : Nat :=\n  match n with\n  | Nat.zero => 0\n  | Nat.succ k => Nat.succ (Nat.succ (Nat.double k))\ntheorem Nat.zero_add2 (n : Nat) : 0 + n = n :=\n  match n with\n  | Nat.zero => (Eq.refl : 0 + 0 = 0)\n  | Nat.succ k => Eq.congr Nat.succ (Nat.zero_add2 k)\neval Vec.head (Vec.map Nat.double (Vec.cons 3 (Vec.cons 4 Vec.nil)))\neval Vec.toList (Vec.map Nat.double (Vec.cons 3 (Vec.cons 4 Vec.nil)))' },
+  { name: 'auto:直覺主義命題邏輯', src: 'theorem and_comm2 {A B : Prop} : And A B -> And B A := by auto\ntheorem curry {A B C : Prop} : (And A B -> C) -> A -> B -> C := by auto\ntheorem contrapos {A B : Prop} : (A -> B) -> Not B -> Not A := by auto\ntheorem dist {A B C : Prop} : And A (Or B C) -> Or (And A B) (And A C) := by auto\ntheorem chain {A B C D : Prop} : (A -> B) -> (B -> C) -> (C -> D) -> A -> D := by auto\ntheorem nn_em {A : Prop} : Not (Not (Or A (Not A))) := by auto' },
+  { name: 'auto:一階、∃ 與等式', src: 'theorem socrates {Man Mortal : Nat -> Prop} {s : Nat} (h : forall (x : Nat), Man x -> Mortal x) (m : Man s) : Mortal s := by auto\ntheorem ex_swap2 {P Q : Nat -> Prop} : Exists (fun (x : Nat) => And (P x) (Q x)) -> Exists (fun (x : Nat) => And (Q x) (P x)) := by auto\ntheorem two_plus_two : 2 + 2 = 4 := by auto\ntheorem eq_flip {A : Type} {a b c : A} (h1 : a = b) (h2 : c = b) : a = c := by\n  rw h1\n  auto' },
+  { name: 'tauto:古典邏輯(依賴 Classical.em)', src: 'theorem peirce {A B : Prop} : ((A -> B) -> A) -> A := by tauto\ntheorem em2 {A : Prop} : Or A (Not A) := by tauto\ntheorem dne {A : Prop} : Not (Not A) -> A := by tauto\ntheorem demorgan {A B : Prop} : Not (And A B) -> Or (Not A) (Not B) := by tauto\ntheorem uses_peirce {A B : Prop} : ((A -> B) -> A) -> A := peirce' },
+  { name: 'auto 做不到的(錯誤示範)', src: 'theorem peirce2 {A B : Prop} : ((A -> B) -> A) -> A := by auto\ntheorem or_any {A B : Prop} : Or A B := by tauto' },
   { name: '自己宣告歸納型別', src: 'inductive Tree (A : Type) : Type\n  | leaf : Tree A\n  | node : Tree A -> A -> Tree A -> Tree A\ndef Tree.size {A : Type} (t : Tree A) : Nat :=\n  Tree.rec (fun (_ : Tree A) => Nat) 0 (fun (l : Tree A) (x : A) (r : Tree A) (ihl : Nat) (ihr : Nat) => Nat.succ (ihl + ihr)) t\neval Tree.size (Tree.node (Tree.node Tree.leaf 1 Tree.leaf) 2 Tree.leaf)\ncheck Tree.ind' },
   { name: '項模式的證明', src: 'theorem and_left {A B : Prop} (h : And A B) : A := And.ind (fun (_ : And A B) => A) (fun (a : A) (b : B) => a) h' },
   { name: '非嚴格正向的型別(錯誤示範)', src: 'inductive Bad : Type\n  | mk : (Bad -> Nat) -> Bad' },
@@ -657,6 +864,7 @@ function compute(){
   s.className='st '+(bad?'bad':'ok');s.textContent=bad?`${bad} 個指令未通過`:`✔ 全部通過(${R.cmds.length} 個指令)`;
   const ul=$('res');ul.textContent='';
   R.cmds.forEach(c=>{const li=el('li',c.status);li.append(el('b','',({ok:'✔',sorry:'⚠',open:'…',error:'✘'})[c.status]+' '),document.createTextNode(c.kind+' '+(c.text||'')));
+    if(c.axioms&&c.axioms.length)li.append(el('small','ax','依賴公理:'+c.axioms.join(', ')));
     if(c.msg)li.append(el('small','',c.msg));ul.append(li)});
   gutter();render();
 }
@@ -665,6 +873,8 @@ function render(){
   const li=Math.min(lineAt(),R.lines.length-1);
   $('where').textContent=`第 ${li+1} 行`;
   $('goals').textContent=R.states[li]!==undefined?R.states[li]:R.info[li]||'(這一行沒有目標或型別資訊)';
+  const c=R.cmds.find(c=>li>=c.line&&li<c.end);
+  $('cert').textContent=c&&c.cert?((c.axioms&&c.axioms.length)?'依賴公理:'+c.axioms.join(', '):'沒有依賴任何公理')+'\n\n'+c.cert:'點選一個已完成的定理,這裡會顯示被核心檢查過的證明項。';
 }
 function go(d){
   const ls=ta.value.split('\n'),i=Math.max(0,Math.min(ls.length-1,lineAt()+d));

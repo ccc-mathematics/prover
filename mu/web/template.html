@@ -28,6 +28,7 @@ ul{list-style:none;margin:6px 0 0;padding:0;border-left:3px solid var(--line)}
 li{padding:3px 0 3px 12px;font:14px/1.6 "JetBrains Mono",ui-monospace,monospace;word-break:break-word}
 li.ok b{color:var(--acc)}li.error b{color:var(--bad)}li.open b,li.sorry b{color:var(--mut)}
 li small{display:block;color:var(--bad);white-space:pre-wrap}
+li small.ax{color:var(--mut)}
 .bar{display:flex;align-items:center;gap:8px;margin:18px 0 8px}
 .bar span{flex:1;color:var(--mut);font-size:.92rem}
 button{font:inherit;font-size:.92rem;color:var(--ink);background:transparent;border:1px solid var(--line);border-radius:6px;padding:4px 14px;cursor:pointer}
@@ -49,6 +50,7 @@ details pre{margin-top:8px;color:var(--mut);font-size:14px}
 <ul id="res"></ul>
 <div class="bar"><button id="prev" aria-label="上一行">◀</button><button id="next" aria-label="下一行">▶</button><span id="where"></span></div>
 <pre id="goals" aria-live="polite"></pre>
+<details><summary>證明項(certificate)與依賴公理</summary><pre id="cert">點選一個已完成的定理,這裡會顯示被核心檢查過的證明項。</pre></details>
 <details><summary>語法與策略速查</summary><pre>inductive T (A : Type) : Nat -> Type  宣告歸納型別;冒號後可以有索引(歸納族)
   | ctor : 型別                      每行一個建構子
   → 自動生成 T.ind(目標 Prop,歸納法)與 T.rec(目標 Type,定義函數)
@@ -56,6 +58,12 @@ details pre{margin-top:8px;color:var(--mut);font-size:14px}
 def f {A : Type} (x : A) : B := t   定義;{ } 是隱式參數;theorem 與 axiom 同格式
 check t / eval t                     顯示型別 / 化簡
 theorem name … : T := by             後接策略;也可以 := 項(項模式)
+def f … : T :=                       本體可以是 match(一層 pattern、結構遞迴):
+  match x with
+  | Vec.cons a t => Vec.cons (f a) (f t)    遞迴呼叫 f 固定參數 t 會換成 ih
+                                      被索引排除的建構子不必寫;缺少分支會報錯
+def f … : T := by                    用策略寫的資料定義(可展開、可 eval);
+                                      目標在 Type 時 cases/induction/subst 改用 .rec / Eq.rec
 
 intro x y     exact t     refine t(留下 _ 當新目標)
 apply t       assumption  have h : T [:= t]
@@ -66,11 +74,15 @@ cases h with a b        分類討論(cases 不顯示 ih);索引可以是任意�
 subst h / injection h / discriminate h   等式 h 的三種化解(cases 內部也用它們)
 constructor / left / right / exists w / exfalso
 norm(化簡目標)  sorry(會被標記)
+auto            認證式自動化(直覺主義):命題邏輯完整(G4ip)、一階反向鏈結、∃、Eq;auto 10 加大深度
+tauto           古典命題邏輯:對原子命題用 Classical.em 分情況再 auto(會依賴公理 Classical.em)
+(單行寫法:theorem t : T := by auto;搜尋不可信,證明項照常由核心檢查)
 
 項:fun (x : A) =&gt; t、forall (x : A), B、A -&gt; B、f a b、_、(t : T)
     Prop、Type、Type 1…;2 + 3 與 a = b 是記號;數字 5 是 Nat.succ 的簡寫
-標準庫:False True And Or Exists Nat List Eq(歸納族)、Not
-        Eq.refl(建構子)symm trans congr subst、False.elim、Nat.add</pre></details>
+標準庫:False True And Or Exists Nat List Eq(歸納族)、Not、公理 Classical.em
+        Eq.refl(建構子,參數隱式,可寫 (Eq.refl : 2 = 2))、Eq.symm trans congr subst、False.elim、Nat.add
+大消去(.rec)只有語法單元型別有:False True And Eq;Or Exists 沒有</pre></details>
 </main>
 <script>/*MU*/</script>
 <script>
@@ -93,6 +105,7 @@ function compute(){
   s.className='st '+(bad?'bad':'ok');s.textContent=bad?`${bad} 個指令未通過`:`✔ 全部通過(${R.cmds.length} 個指令)`;
   const ul=$('res');ul.textContent='';
   R.cmds.forEach(c=>{const li=el('li',c.status);li.append(el('b','',({ok:'✔',sorry:'⚠',open:'…',error:'✘'})[c.status]+' '),document.createTextNode(c.kind+' '+(c.text||'')));
+    if(c.axioms&&c.axioms.length)li.append(el('small','ax','依賴公理:'+c.axioms.join(', ')));
     if(c.msg)li.append(el('small','',c.msg));ul.append(li)});
   gutter();render();
 }
@@ -101,6 +114,8 @@ function render(){
   const li=Math.min(lineAt(),R.lines.length-1);
   $('where').textContent=`第 ${li+1} 行`;
   $('goals').textContent=R.states[li]!==undefined?R.states[li]:R.info[li]||'(這一行沒有目標或型別資訊)';
+  const c=R.cmds.find(c=>li>=c.line&&li<c.end);
+  $('cert').textContent=c&&c.cert?((c.axioms&&c.axioms.length)?'依賴公理:'+c.axioms.join(', '):'沒有依賴任何公理')+'\n\n'+c.cert:'點選一個已完成的定理,這裡會顯示被核心檢查過的證明項。';
 }
 function go(d){
   const ls=ta.value.split('\n'),i=Math.max(0,Math.min(ls.length-1,lineAt()+d));

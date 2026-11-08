@@ -16,7 +16,7 @@ ok(st('theorem t {A : Prop} : A := by\n  sorry') === 'sorry', 'sorry 會被標�
 ok(st('theorem t {A : Prop} (a : A) : A := a') === 'ok', '項模式的證明');
 ok(st('theorem t {A B : Prop} (a : A) : B := a') === 'error', '項模式:型別錯誤被拒絕');
 ok(st('inductive Two : Type\n  | a : Two\n  | b : Two\ntheorem t (x : Two) : Or (x = Two.a) (x = Two.b) := by\n  cases x\n  left\n  rfl\n  right\n  rfl', 1) === 'ok', '自訂歸納型別 + cases + constructor');
-ok(txt('check Eq.ind').includes('∀ {A : Type}') && st('check Eq.rec') === 'error', 'Eq 是歸納族,.ind 有索引,Prop 沒有 .rec');
+ok(txt('check Eq.ind').includes('∀ {A : Type}') && st('check Eq.rec') === 'ok', 'Eq 是歸納族,.ind 有索引,且是語法單元型別所以有 .rec(大消去)');
 const VEC = 'inductive Vec (A : Type) : Nat -> Type\n  | nil : Vec A 0\n  | cons : forall {n : Nat}, A -> Vec A n -> Vec A (n + 1)\n';
 ok(st(VEC + 'check Vec.cons 1 Vec.nil', 1) === 'ok', 'Vec:索引由建構子推出');
 ok(st(VEC + 'check (Vec.nil : Vec Nat 1)', 1) === 'error', 'Vec:索引不吻合被拒絕');
@@ -33,6 +33,34 @@ ok(st('theorem t (h : Nat.succ 0 = 0) : False := by\n  discriminate h') === 'ok'
 ok(st('theorem t {A : Type} {a b : A} (h : a = b) (P : A -> Prop) (pa : P a) : P b := by\n  subst h\n  exact pa') === 'ok', 'subst');
 ok(st('theorem t {m n : Nat} (h : m = Nat.succ m) : False := by\n  subst h') === 'error', 'subst 的 occurs check');
 ok(st('inductive Q : Nat -> Type\n  | mk : Q 0\ntheorem t (q : Q 1) : False := by\n  cases q') === 'ok', '索引不吻合時沒有任何建構子可用');
+const VH = VEC + 'def Vec.toList {A : Type} {n : Nat} (v : Vec A n) : List A :=\n  Vec.rec (fun (m : Nat) (_ : Vec A m) => List A) List.nil (fun (m : Nat) (a : A) (t : Vec A m) (r : List A) => List.cons a r) n v\n';
+ok(txt(VH + 'def Vec.head {A : Type} {n : Nat} (v : Vec A (n + 1)) : A := by\n  cases v with m a t\n  exact a\neval Vec.head (Vec.cons 7 (Vec.cons 8 Vec.nil))', 3).startsWith('7 :'), '用 cases 定義 Vec.head 並計算出 7');
+ok(txt(VH + 'def Vec.map {A B : Type} (f : A -> B) {n : Nat} (v : Vec A n) : Vec B n := by\n  induction v with m a t ih\n  exact Vec.nil\n  exact Vec.cons (f a) ih\neval Vec.toList (Vec.map Nat.succ (Vec.cons 1 (Vec.cons 2 Vec.nil)))', 3).includes('List.cons 2 (List.cons 3 List.nil)'), '用 induction 定義 Vec.map 並計算');
+ok(txt('def Nat.cast_demo (m n : Nat) (h : m = n) : Nat := by\n  subst h\n  exact m\neval Nat.cast_demo 2 2 (Eq.refl : 2 = 2)', 1).startsWith('2 :'), 'subst 在 Type 目標上用 Eq.rec');
+ok(st('def f {A : Type} {P : A -> Prop} (h : Exists P) : A := by\n  cases h with x hx\n  exact x') === 'error', 'Exists 沒有大消去,不能對 Type 的目標 cases');
+ok(st('def two : Nat := by\n  exact Nat.succ 1\neval two', 1) === 'ok' && txt('def two : Nat := by\n  exact Nat.succ 1\neval two', 1).startsWith('2 :'), 'def 用策略寫之後可以展開');
+ok(st('check False.rec') === 'ok' && st('check True.rec') === 'ok' && st('check And.rec') === 'ok' && st('check Exists.rec') === 'error', '語法單元型別有 .rec,Or / Exists 沒有');
+const MV = VEC + 'def Vec.toList {A : Type} {n : Nat} (v : Vec A n) : List A :=\n  match v with\n  | Vec.nil => List.nil\n  | Vec.cons a t => List.cons a (Vec.toList t)\n';
+ok(txt(MV + 'eval Vec.toList (Vec.cons 1 (Vec.cons 2 Vec.nil))', 2).includes('List.cons 1 (List.cons 2 List.nil)'), 'match:結構遞迴的 Vec.toList');
+ok(txt('def Nat.double (n : Nat) : Nat :=\n  match n with\n  | Nat.zero => 0\n  | Nat.succ k => Nat.succ (Nat.succ (Nat.double k))\neval Nat.double 3', 1).startsWith('6 :'), 'match:Nat.double 3 = 6');
+ok(st(VEC + 'def Vec.head {A : Type} {n : Nat} (v : Vec A (n + 1)) : A :=\n  match v with\n  | Vec.cons a t => a', 1) === 'ok', 'match:索引合一自動排除 nil,不必寫該分支');
+ok(st(VEC + 'def Vec.head {A : Type} {n : Nat} (v : Vec A (n + 1)) : A :=\n  match v with\n  | Vec.nil => Vec.head Vec.nil\n  | Vec.cons a t => a', 1) === 'error', 'match:不可能的分支被拒絕');
+ok(st('def f (n : Nat) : Nat :=\n  match n with\n  | Nat.zero => 0') === 'error', 'match:缺少分支被拒絕');
+ok(st('def loop (n : Nat) : Nat :=\n  match n with\n  | Nat.zero => 0\n  | Nat.succ k => loop (Nat.succ k)') === 'error', 'match:非結構遞迴被拒絕');
+ok(st('def g (n : Nat) : Nat :=\n  match n with\n  | Nat.zero => 0\n  | Nat.succ => 1') === 'error', 'match:變數個數不對被拒絕');
+ok(st('theorem z (n : Nat) : 0 + n = n :=\n  match n with\n  | Nat.zero => (Eq.refl : 0 + 0 = 0)\n  | Nat.succ k => Eq.congr Nat.succ (z k)') === 'ok', 'match:用結構遞迴證明定理');
+const AU = 'theorem p {A B C D : Prop} : (A -> B) -> (B -> C) -> (C -> D) -> A -> D := by auto\ntheorem q {A B : Prop} : ((A -> B) -> A) -> A := by tauto\ntheorem r {A B : Prop} : ((A -> B) -> A) -> A := q\n';
+ok(run(AU).ok, 'auto / tauto 證出的定理通過核心檢查');
+ok(run(AU).cmds[0].axioms.length === 0, 'auto 的證明不依賴任何公理');
+ok(run(AU).cmds[1].axioms.join() === 'Classical.em', 'tauto 的證明依賴 Classical.em');
+ok(run(AU).cmds[2].axioms.join() === 'Classical.em', '公理依賴會沿著定理傳遞');
+ok(st('theorem p {A B : Prop} : ((A -> B) -> A) -> A := by auto') === 'error', 'auto 是直覺主義的,證不出 Peirce 定律');
+ok(st('theorem p {A B : Prop} : Or A B := by tauto') === 'error', 'tauto 證不出非重言式');
+ok(st('theorem p {A : Prop} : A := by sorry\ntheorem q {A : Prop} : A := p', 1) === 'ok' && run('theorem p {A : Prop} : A := by sorry\ntheorem q {A : Prop} : A := p').cmds[1].axioms.join() === 'sorry', 'sorry 也會沿著定理傳遞');
+ok(st('theorem p {Man Mortal : Nat -> Prop} {s : Nat} (h : forall (x : Nat), Man x -> Mortal x) (m : Man s) : Mortal s := by auto') === 'ok', 'auto:一階反向鏈結(合一解出見證)');
+ok(st('theorem p {P Q : Nat -> Prop} : Exists (fun (x : Nat) => And (P x) (Q x)) -> Exists (fun (x : Nat) => And (Q x) (P x)) := by auto') === 'ok', 'auto:∃ 的見證搜尋');
+ok(st('theorem p {A : Prop} : Not (Not (Or A (Not A))) := by auto') === 'ok', 'auto:需要 G4ip 的 (C→D)→B 規則');
+ok(run('theorem p {A : Prop} : A -> A := by auto').cmds[0].cert.includes('fun'), '每個定理都有可重新檢查的證明項(certificate)');
 try { M.kernel.infer(M.kernel.A(M.kernel.C('Nat.zero'), M.kernel.C('Nat.zero'))); ok(false, '核心應拒絕偽造的項'); }
 catch (e) { ok(e instanceof M.MuError, '核心拒絕偽造的項'); }
 process.exit(fail ? 1 : 0);

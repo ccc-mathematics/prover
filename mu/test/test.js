@@ -1,0 +1,38 @@
+const M = require('../src/mu.js'); let fail = 0;
+const ok = (c, m) => { console.log((c ? 'PASS  ' : 'FAIL  ') + m); if (!c) fail++; };
+const run = s => M.runScript(s), st = (s, i = 0) => run(s).cmds[i].status, txt = (s, i = 0) => run(s).cmds[i].text;
+for (const e of M.examples) ok(run(e.src).ok === !e.name.includes('錯誤'), e.name);
+ok(txt('eval 2 + 3').startsWith('5 :'), 'ι 化簡:2 + 3 = 5');
+ok(txt('check forall (P : Prop), P -> P').endsWith(': Prop'), 'Prop 是 impredicative');
+ok(txt('check Type 1').endsWith(': Type 2'), '宇宙階層:Type 1 : Type 2');
+ok(st('check (Type : Type)') === 'error', 'Type : Type 被拒絕');
+ok(st('inductive U : Type\n  | mk : Type -> U') === 'error', '宇宙層級過高的欄位被拒絕');
+ok(st('inductive Bad : Type\n  | mk : (Bad -> Nat) -> Bad') === 'error', '非正向遞迴被拒絕');
+ok(st('check Or.rec') === 'error', 'Prop 的歸納型別沒有 .rec(不允許大消去)');
+ok(st('theorem t (n : Nat) : n = 0 := by\n  rfl', 0) === 'error', 'rfl 對非定義等價的式子失敗');
+ok(st('theorem t {A : Prop} (a : A) : A := by\n  intro h') === 'error', '目標不是 Π 時 intro 失敗');
+ok(st('theorem t {A : Prop} : A -> A := by\n  intro h') === 'open', '未完成的證明回報 open');
+ok(st('theorem t {A : Prop} : A := by\n  sorry') === 'sorry', 'sorry 會被標記');
+ok(st('theorem t {A : Prop} (a : A) : A := a') === 'ok', '項模式的證明');
+ok(st('theorem t {A B : Prop} (a : A) : B := a') === 'error', '項模式:型別錯誤被拒絕');
+ok(st('inductive Two : Type\n  | a : Two\n  | b : Two\ntheorem t (x : Two) : Or (x = Two.a) (x = Two.b) := by\n  cases x\n  left\n  rfl\n  right\n  rfl', 1) === 'ok', '自訂歸納型別 + cases + constructor');
+ok(txt('check Eq.ind').includes('∀ {A : Type}') && st('check Eq.rec') === 'error', 'Eq 是歸納族,.ind 有索引,Prop 沒有 .rec');
+const VEC = 'inductive Vec (A : Type) : Nat -> Type\n  | nil : Vec A 0\n  | cons : forall {n : Nat}, A -> Vec A n -> Vec A (n + 1)\n';
+ok(st(VEC + 'check Vec.cons 1 Vec.nil', 1) === 'ok', 'Vec:索引由建構子推出');
+ok(st(VEC + 'check (Vec.nil : Vec Nat 1)', 1) === 'error', 'Vec:索引不吻合被拒絕');
+ok(st(VEC + 'theorem t {A : Type} (v : Vec A 0) : v = v := by\n  induction v', 1) === 'error', 'induction 遇到非變數索引給出明確錯誤');
+ok(st('inductive Bad2 : Nat -> Type\n  | mk : Bad2 (Nat.succ 0) -> Bad2 0') === 'ok', '遞迴欄位可以有不同的索引');
+ok(st('inductive Bad3 : Type -> Type\n  | mk : Bad3 (Bad3 Nat)') === 'error', '索引提到自己被拒絕');
+ok(txt('theorem t {A : Type} (a b : A) (h : a = b) : b = a := by\n  rw h\n  rfl'.replace(/^/, '')) !== undefined && st('theorem t {A : Type} (a b : A) (h : a = b) : b = a := by\n  rw h\n  rfl') === 'ok', 'rw 經由 Eq.subst(J 規則)');
+const FIN = 'inductive Fin : Nat -> Type\n  | zero : forall {n : Nat}, Fin (n + 1)\n  | succ : forall {n : Nat}, Fin n -> Fin (n + 1)\n';
+ok(st(FIN + 'theorem t {C : Prop} (i : Fin 0) : C := by\n  cases i', 1) === 'ok', 'cases 索引合一:Fin 0 沒有元素');
+ok(st(FIN + 'theorem t (i : Fin 1) : i = i := by\n  cases i\n  rfl\n  rfl', 1) === 'ok', 'cases 索引合一:Fin 1 兩個建構子都保留');
+ok(st(VEC + 'theorem t {A : Type} (v : Vec A 0) : v = v := by\n  cases v\n  rfl', 1) === 'ok', 'cases v : Vec A 0:保留 nil 並排除 cons');
+ok(st('theorem t {m n : Nat} (h : Nat.succ m = Nat.succ n) : m = n := by\n  injection h\n  exact h_1') === 'ok', 'injection');
+ok(st('theorem t (h : Nat.succ 0 = 0) : False := by\n  discriminate h') === 'ok', 'discriminate');
+ok(st('theorem t {A : Type} {a b : A} (h : a = b) (P : A -> Prop) (pa : P a) : P b := by\n  subst h\n  exact pa') === 'ok', 'subst');
+ok(st('theorem t {m n : Nat} (h : m = Nat.succ m) : False := by\n  subst h') === 'error', 'subst 的 occurs check');
+ok(st('inductive Q : Nat -> Type\n  | mk : Q 0\ntheorem t (q : Q 1) : False := by\n  cases q') === 'ok', '索引不吻合時沒有任何建構子可用');
+try { M.kernel.infer(M.kernel.A(M.kernel.C('Nat.zero'), M.kernel.C('Nat.zero'))); ok(false, '核心應拒絕偽造的項'); }
+catch (e) { ok(e instanceof M.MuError, '核心拒絕偽造的項'); }
+process.exit(fail ? 1 : 0);

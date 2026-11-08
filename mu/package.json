@@ -1,0 +1,8 @@
+{
+  "name": "mu-prover",
+  "version": "1.0.0",
+  "description": "μ:微型 CIC 證明助手(宇宙階層、通用歸納型別、隱式參數與合一、策略),命令列與純前端網頁",
+  "bin": { "mu": "bin/cli.js" },
+  "scripts": { "demo": "node bin/cli.js --demo", "test": "node test/test.js", "build": "node scripts/build-web.js" },
+  "license": "MIT"
+}
